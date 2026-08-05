@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# generated data / model artifacts (large / reproducible)
+data/*.csv
+data/*.parquet
+data/raw/
+data/cache/
+models/*.pkl
+models/*.txt
+models/*.joblib
+
+!data/.gitkeep
+!models/.gitkeep
