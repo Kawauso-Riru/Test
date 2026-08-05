@@ -33,7 +33,9 @@ RESULT_HEADER_ALIASES = {
     "単勝": "odds",
     "人気": "popularity",
     "馬体重": "horse_weight",
+    "馬体重(増減)": "horse_weight",  # race.netkeiba.com shutuba table
     "調教師": "trainer",
+    "厩舎": "trainer",  # race.netkeiba.com shutuba table
 }
 
 
@@ -93,29 +95,59 @@ def _row_to_dict(row: Tag, header_map: dict) -> dict:
 
 
 def parse_race_meta(soup: BeautifulSoup) -> dict:
-    """Best-effort extraction of race metadata (surface/distance/weather/...)."""
+    """Best-effort extraction of race metadata (surface/distance/weather/...).
+
+    Two known layouts are handled:
+      - race.netkeiba.com (shutuba pages): <h1 class="RaceName">, <div class="RaceData01">
+      - db.netkeiba.com (result pages): <dl class="racedata ..."><h1>(no class)
+        plus a <span> with the data text, all lowercase class names.
+    """
     meta: dict = {}
 
-    name_tag = soup.find(["h1", "div"], class_=re.compile("RaceName|race_name"))
+    name_tag = soup.find(["h1", "div"], class_=re.compile("RaceName|race_name", re.I))
+    data_tag = soup.find(["div", "p"], class_=re.compile("RaceData", re.I))
+
+    if data_tag is None:
+        dl = soup.find("dl", class_=re.compile("racedata", re.I))
+        if dl is not None:
+            data_tag = dl.find("span") or dl.find("p")
+            if name_tag is None:
+                name_tag = dl.find("h1")
+
     if name_tag is not None:
         meta["race_name"] = _clean_text(name_tag)
 
-    data_tag = soup.find(["div", "p"], class_=re.compile("RaceData"))
     data_text = _clean_text(data_tag)
     meta["race_data_raw"] = data_text
 
-    dist_match = re.search(r"(芝|ダート)(\d{3,4})m", data_text)
+    # "ダ右1200m" / "芝右 外1600m" -- surface char(s) followed eventually by "<digits>m".
+    dist_match = re.search(r"(芝|ダ)[^\d]*?(\d{3,4})m", data_text)
     if dist_match:
-        meta["surface"] = dist_match.group(1)
+        meta["surface"] = "ダート" if dist_match.group(1) == "ダ" else dist_match.group(1)
         meta["distance"] = int(dist_match.group(2))
 
-    weather_match = re.search(r"天候[:：]?(\S+?)(?:\s|$)", data_text)
+    weather_match = re.search(r"天候\s*[:：]\s*(\S+?)(?:[\s/]|$)", data_text)
     if weather_match:
         meta["weather"] = weather_match.group(1)
 
-    condition_match = re.search(r"馬場[:：]?(\S+?)(?:\s|$)", data_text)
+    # "馬場:良" (race.netkeiba.com) or, lacking that label, "ダート : 良" / "芝 : 良" (db.netkeiba.com)
+    condition_match = re.search(r"馬場\s*[:：]\s*(\S+?)(?:[\s/]|$)", data_text)
+    if condition_match is None:
+        condition_match = re.search(r"(?:芝|ダート)\s*[:：]\s*(\S+?)(?:[\s/]|$)", data_text)
     if condition_match:
         meta["track_condition"] = condition_match.group(1)
+
+    # db.netkeiba.com result pages carry a concise "<p class="smalltxt">" line:
+    # "2024年01月07日 1回中山2日目 3歳未勝利  [指](馬齢)" -- the most reliable
+    # source of the race's calendar date and course name (place).
+    smalltxt = soup.find("p", class_=re.compile("smalltxt", re.I))
+    smalltxt_text = _clean_text(smalltxt)
+    date_match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d+)回(\S+?)(\d+)日目", smalltxt_text)
+    if date_match:
+        meta["date"] = f"{int(date_match.group(1)):04d}-{int(date_match.group(2)):02d}-{int(date_match.group(3)):02d}"
+        meta["kaisai_round"] = int(date_match.group(4))
+        meta["place"] = date_match.group(5)
+        meta["day_of_meeting"] = int(date_match.group(6))
 
     return meta
 
@@ -129,7 +161,7 @@ def parse_race_result_html(html: str) -> dict:
         header_map = _build_header_map(table)
         for row in table.find_all("tr")[1:]:
             record = _row_to_dict(row, header_map)
-            if record.get("umaban"):
+            if record.get("umaban", "").isdigit():
                 entries.append(record)
     return {"meta": parse_race_meta(soup), "entries": entries}
 
@@ -143,6 +175,6 @@ def parse_shutuba_html(html: str) -> dict:
         header_map = _build_header_map(table)
         for row in table.find_all("tr")[1:]:
             record = _row_to_dict(row, header_map)
-            if record.get("umaban"):
+            if record.get("umaban", "").isdigit():
                 entries.append(record)
     return {"meta": parse_race_meta(soup), "entries": entries}

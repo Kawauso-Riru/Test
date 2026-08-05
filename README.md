@@ -24,10 +24,11 @@ src/keiba_ai/
   model.py        # LightGBMモデルの学習・保存・推論
   app.py          # Streamlit UI
 scripts/
-  generate_demo_data.py  # 合成データをCSVに書き出す
-  train_model.py          # CSVからモデルを学習
-  predict_race.py         # 出馬表(CSV/URL)から予測
-tests/                     # pytest (parser/features/modelのユニットテスト)
+  generate_demo_data.py       # 合成データをCSVに書き出す
+  scrape_jra_dirt_results.py  # 中央競馬(JRA10場)の実レース結果を収集
+  train_model.py               # CSVからモデルを学習(--dirt-onlyでダート特化)
+  predict_race.py              # 出馬表(CSV/URL)から予測
+tests/                          # pytest (parser/features/modelのユニットテスト)
 ```
 
 ## セットアップ
@@ -62,21 +63,36 @@ streamlit run src/keiba_ai/app.py
 サイドバーで「デモデータで試す」を選べば、その場でモデルを学習して
 架空レースの予測結果を確認できます。
 
-## 実データを使う場合
+## 実データを使う場合(中央競馬・ダート特化)
 
-1. `keiba_ai.scraper.PoliteScraper` を使って結果ページ・出馬表ページを取得します。
-   `parser.py` はヘッダのラベル文字列(着順・馬番・馬名 など)でテーブルを
-   自動検出するため、多少レイアウトが異なるサイトでも動く可能性がありますが、
-   対象サイトのHTML構造に応じて `RESULT_HEADER_ALIASES` の調整が必要な場合があります。
-2. 数百〜数千レース分の結果を集めて1つのCSV(`race_id, date, place, surface,
-   distance, track_condition, waku, umaban, horse_id, horse_name, sex_age,
-   kinryo, jockey_id, jockey, trainer_id, trainer, horse_weight, odds,
-   popularity, rank, last_3f` 列)にまとめます。
-3. `scripts/train_model.py` で学習し、`scripts/predict_race.py` または
-   Streamlit の「URLから取得」モードで予測します。
+```bash
+# 1. 中央競馬(JRA10場)のレース結果を収集(芝・ダート両方。理由は下記)
+python scripts/scrape_jra_dirt_results.py \
+    --start-date 20240106 --end-date 20240331 \
+    --out data/jra_results.csv --max-races 250 \
+    --contact your-email@example.com
 
-学習データが少ない(数レース程度)と過学習し、意味のある予測にはなりません。
-実運用には最低でも数百レース規模の履歴データを推奨します。
+# 2. ダート限定でモデルを学習(馬/騎手の履歴特徴量には芝レースも活用しつつ、
+#    学習対象の行だけダートレースに絞る)
+python scripts/train_model.py --data data/jra_results.csv --dirt-only \
+    --model-out models/model.joblib --history-out models/history.csv
+
+# 3. 予測
+python scripts/predict_race.py --shutuba-csv data/sample_shutuba.csv \
+    --model models/model.joblib --history models/history.csv
+```
+
+`scrape_jra_dirt_results.py` は `db.netkeiba.com` の日別レース一覧ページを
+起点に、レースIDの2桁の場コード(01〜10)で中央競馬10場(札幌・函館・福島・
+新潟・東京・中山・中京・京都・阪神・小倉)のみを抽出し、地方競馬(NAR)を
+除外します。**芝レースもあえて収集・保存します**(馬/騎手の「全体的な実力」の
+参考になり、出走間隔などの特徴量にも必要なため)。ダートへの特化は
+`train_model.py --dirt-only` で学習対象の行を絞ることで行います。
+
+学習データが少ない(数十レース程度)と過学習し、意味のある予測にはなりません。
+実運用には最低でも数百レース規模の履歴データ(特にダートレース)を推奨します。
+
+⚠️ 実サイトへのアクセスを行うため、事前に対象サイトの利用規約を確認してください。
 
 ## モデルについて
 
@@ -86,6 +102,11 @@ streamlit run src/keiba_ai/app.py
   (出走数・勝率・複勝率・平均着順・前走からの間隔)を使用します。学習時は
   `groupby + cumsum` で各レースより前のデータのみから計算し、未来の結果が
   紛れ込まないようにしています。
+- **ダート特化特徴量**: 上記に加え、`horse_dirt_*` / `jockey_dirt_*`
+  (ダートレースのみに絞った出走数・勝率・複勝率・平均着順)を持ちます。
+  芝レースを挟んでも正しくスキップされ、その馬/騎手の直近の**ダートでの**
+  実績のみを反映します(`tests/test_features.py` で検証)。芝適性とダート
+  適性は必ずしも一致しないため、両者を区別して学習させています。
 - 検証は `GroupShuffleSplit` でレース単位に分割し(同一レースの馬が
   学習/検証に分かれて跨がらないように)、held-outレースでのAUCを表示します。
 

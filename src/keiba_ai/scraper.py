@@ -9,6 +9,7 @@ that robots.txt disallows unless you explicitly opt out.
 """
 from __future__ import annotations
 
+import re
 import time
 import urllib.robotparser as robotparser
 from dataclasses import dataclass, field
@@ -21,6 +22,21 @@ import requests
 from .parser import parse_race_result_html, parse_shutuba_html
 
 DEFAULT_USER_AGENT = "keiba-ai-research-bot/0.1 (+contact: set-your-email-here)"
+
+# The 10 official JRA (中央競馬) courses, keyed by the 2-digit place code that
+# appears in netkeiba race_ids (chars [4:6] of the 12-digit id). Any other
+# code belongs to a regional/NAR (地方競馬) meeting.
+JRA_PLACE_CODES = {
+    "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
+    "06": "中山", "07": "中京", "08": "京都", "09": "阪神", "10": "小倉",
+}
+
+_RACE_ID_PATTERN = re.compile(r"/race/(\d{12})/")
+
+
+def is_jra_race_id(race_id: str) -> bool:
+    """True if race_id belongs to one of the 10 JRA (central racing) courses."""
+    return len(race_id) == 12 and race_id[4:6] in JRA_PLACE_CODES
 
 
 class RobotsDisallowedError(RuntimeError):
@@ -102,6 +118,18 @@ class PoliteScraper:
 
     def fetch_shutuba(self, url: str) -> dict:
         return parse_shutuba_html(self.fetch(url))
+
+    def list_race_ids_for_date(self, date: str) -> list:
+        """date: 'YYYYMMDD'. Race ids on that day's db.netkeiba.com list page --
+        JRA and regional/NAR meetings mixed together. Filter with
+        is_jra_race_id() if you only want the 10 JRA courses. Returns an empty
+        list for days with no racing at all (list page has no race links)."""
+        html = self.fetch(f"https://db.netkeiba.com/race/list/{date}/")
+        return sorted(set(_RACE_ID_PATTERN.findall(html)))
+
+    @staticmethod
+    def race_result_url(race_id: str) -> str:
+        return f"https://db.netkeiba.com/race/{race_id}/"
 
 
 def re_sub_safe(url: str) -> str:

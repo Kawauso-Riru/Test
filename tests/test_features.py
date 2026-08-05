@@ -23,6 +23,12 @@ def _sample_raw() -> pd.DataFrame:
             sex_age="牡4", kinryo=57.0, jockey_id="j1", jockey="J1", trainer_id="t1",
             trainer="T1", horse_weight="482(+2)", odds=1.8, popularity=1, rank=1, last_3f=36.0,
         ),
+        dict(
+            race_id="r3", date="2023-01-15", place="中山", surface="ダート", distance=1800,
+            track_condition="良", waku=1, umaban=1, horse_id="h1", horse_name="H1",
+            sex_age="牡4", kinryo=57.0, jockey_id="j1", jockey="J1", trainer_id="t1",
+            trainer="T1", horse_weight="480(-2)", odds=2.5, popularity=1, rank=4, last_3f=36.5,
+        ),
     ]
     return pd.DataFrame(rows)
 
@@ -46,6 +52,25 @@ def test_build_training_frame_no_leakage():
 
     assert first_race["target_top3"] == 1
     assert first_race["target_win"] == 1
+
+
+def test_dirt_only_history_ignores_interleaved_turf_races():
+    df = build_training_frame(_sample_raw())
+
+    # r2 is h1's first-ever DIRT race, even though it's h1's second race
+    # overall (r1 was turf) -- dirt history must start from zero here, not
+    # inherit the turf win.
+    r2 = df[(df["horse_id"] == "h1") & (df["race_id"] == "r2")].iloc[0]
+    assert r2["horse_runs_before"] == 1          # overall: counts the turf race
+    assert r2["horse_dirt_runs_before"] == 0      # dirt-only: no prior dirt starts
+    assert pd.isna(r2["horse_dirt_win_rate_before"])
+
+    # r3 is h1's second dirt race; dirt history should reflect only r2 (a win),
+    # not be diluted or skipped because of the turf race in between.
+    r3 = df[(df["horse_id"] == "h1") & (df["race_id"] == "r3")].iloc[0]
+    assert r3["horse_dirt_runs_before"] == 1
+    assert r3["horse_dirt_win_rate_before"] == 1.0
+    assert r3["horse_dirt_avg_rank_before"] == 1.0
 
 
 def test_sex_age_and_weight_parsing():

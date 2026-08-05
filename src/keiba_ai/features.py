@@ -28,6 +28,16 @@ NUMERIC_FEATURE_COLUMNS = [
     "jockey_runs_before",
     "jockey_win_rate_before",
     "jockey_top3_rate_before",
+    # Surface-specific (currently: dirt-only) history -- distinct from the
+    # surface-agnostic stats above because dirt aptitude doesn't transfer
+    # 1:1 from turf form. NaN for a horse/jockey with no prior dirt starts.
+    "horse_dirt_runs_before",
+    "horse_dirt_win_rate_before",
+    "horse_dirt_top3_rate_before",
+    "horse_dirt_avg_rank_before",
+    "jockey_dirt_runs_before",
+    "jockey_dirt_win_rate_before",
+    "jockey_dirt_top3_rate_before",
 ]
 
 CATEGORICAL_FEATURE_COLUMNS = ["sex", "surface", "track_condition", "place"]
@@ -65,6 +75,7 @@ def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["rank_numeric"] = pd.to_numeric(df["rank"], errors="coerce")
     df["target_top3"] = (df["rank_numeric"] <= 3).astype(int)
     df["target_win"] = (df["rank_numeric"] == 1).astype(int)
+    df["is_dirt"] = df["surface"] == "ダート"
     return df
 
 
@@ -110,7 +121,15 @@ def build_training_frame(raw: pd.DataFrame) -> pd.DataFrame:
     df = add_basic_fields(raw)
     horse_stats = _expanding_entity_stats(df, "horse_id", "horse")
     jockey_stats = _expanding_entity_stats(df, "jockey_id", "jockey")
-    return df.join(horse_stats).join(jockey_stats)
+    df = df.join(horse_stats).join(jockey_stats)
+
+    # Dirt-only history: same expanding logic, restricted to the horse's/
+    # jockey's prior dirt starts (interleaved turf races are skipped, not
+    # just zeroed out) so these reflect dirt-specific form.
+    dirt_df = df[df["is_dirt"]]
+    horse_dirt_stats = _expanding_entity_stats(dirt_df, "horse_id", "horse_dirt")
+    jockey_dirt_stats = _expanding_entity_stats(dirt_df, "jockey_id", "jockey_dirt")
+    return df.join(horse_dirt_stats).join(jockey_dirt_stats)
 
 
 def _latest_entity_stats(training_df: pd.DataFrame, entity_col: str, prefix: str) -> pd.DataFrame:
@@ -141,12 +160,23 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
     horse_latest = _latest_entity_stats(training_df, "horse_id", "horse")
     jockey_latest = _latest_entity_stats(training_df, "jockey_id", "jockey")
 
+    # Dirt-specific "latest known" stats come from the horse's/jockey's most
+    # recent *dirt* start, not their most recent start overall -- otherwise a
+    # horse whose last race was on turf would show no dirt history at all.
+    dirt_history = training_df[training_df["is_dirt"]]
+    horse_dirt_latest = _latest_entity_stats(dirt_history, "horse_id", "horse_dirt")
+    jockey_dirt_latest = _latest_entity_stats(dirt_history, "jockey_id", "jockey_dirt")
+
     df = df.merge(horse_latest, on="horse_id", how="left")
     df = df.merge(jockey_latest, on="jockey_id", how="left")
+    df = df.merge(horse_dirt_latest, on="horse_id", how="left")
+    df = df.merge(jockey_dirt_latest, on="jockey_id", how="left")
 
     rename = {f"{col}_latest": col for col in (
         "horse_runs_before", "horse_win_rate_before", "horse_top3_rate_before", "horse_avg_rank_before",
         "jockey_runs_before", "jockey_win_rate_before", "jockey_top3_rate_before",
+        "horse_dirt_runs_before", "horse_dirt_win_rate_before", "horse_dirt_top3_rate_before", "horse_dirt_avg_rank_before",
+        "jockey_dirt_runs_before", "jockey_dirt_win_rate_before", "jockey_dirt_top3_rate_before",
     )}
     df = df.rename(columns=rename)
     df["days_since_last_race"] = np.nan  # unknown for a not-yet-run race

@@ -43,3 +43,39 @@ def test_parse_shutuba_html():
     assert entries[0]["horse_name"] == "サンプルホースA"
     assert entries[1]["horse_id"] == "2020105999"
     assert entries[1]["jockey_id"] == "00999"
+
+
+def test_parse_race_result_html_dbnetkeiba_style():
+    """db.netkeiba.com uses <dl class="racedata"> + an unclassed <h1>, and labels
+    track condition with the surface name ("ダート : 良") instead of "馬場:"."""
+    html = (FIXTURES / "race_result_dbstyle_sample.html").read_text(encoding="utf-8")
+    parsed = parse_race_result_html(html)
+
+    assert parsed["meta"]["race_name"] == "サンプルダート特別"
+    assert parsed["meta"]["surface"] == "ダート"
+    assert parsed["meta"]["distance"] == 1200
+    assert parsed["meta"]["track_condition"] == "良"
+    assert parsed["meta"]["weather"] == "晴"
+
+    entries = parsed["entries"]
+    assert len(entries) == 2
+    assert entries[0]["horse_id"] == "2019104567"
+    assert entries[0]["trainer_id"] == "01055"
+
+
+def test_parse_shutuba_html_alt_headers_and_stray_row():
+    """race.netkeiba.com's shutuba table uses 厩舎/馬体重(増減) headers and has a
+    stray "登録/グループ" toggle row before the real entries -- it must be filtered
+    out by the numeric-umaban check rather than mis-parsed as an entry."""
+    html = (FIXTURES / "shutuba_altheaders_sample.html").read_text(encoding="utf-8")
+    parsed = parse_shutuba_html(html)
+
+    assert parsed["meta"]["surface"] == "ダート"
+    assert parsed["meta"]["distance"] == 1400
+    assert parsed["meta"]["track_condition"] == "稍重"
+
+    entries = parsed["entries"]
+    assert len(entries) == 2
+    assert entries[0]["trainer"] == "美浦サンプル厩舎A"
+    assert entries[0]["trainer_id"] == "01055"
+    assert entries[0]["horse_weight"] == "482(+2)"
