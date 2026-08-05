@@ -46,6 +46,17 @@ NUMERIC_FEATURE_COLUMNS = [
     "course_waku_bias_win_rate_before",
     "course_waku_bias_top3_rate_before",
     "course_waku_bias_avg_rank_before",
+    # Running style (脚質): how far forward/back this horse typically sits
+    # early in a race, as a fraction of the field (0 = always leads, 1 =
+    # always trails). Derived from the `passing` (corner position) column,
+    # which is only known *after* a race runs -- so, like every other _before
+    # feature, only the horse's historical average is used, never the
+    # current race's own value. LightGBM can learn course/distance x style
+    # interactions (e.g. "this course favors front-runners") from this
+    # continuous feature combined with place/surface/distance_band directly,
+    # without needing a hand-built course-x-style aggregate.
+    "horse_early_position_ratio_before",
+    "horse_dirt_early_position_ratio_before",
 ]
 
 CATEGORICAL_FEATURE_COLUMNS = ["sex", "surface", "track_condition", "place", "distance_band"]
@@ -80,6 +91,23 @@ def _distance_band(distance: pd.Series) -> pd.Series:
     return band.astype(object).where(numeric.notna(), "不明")
 
 
+def _parse_early_position(passing) -> float:
+    """First corner position from a '4-4' / '12-14-13-11' style passing string."""
+    m = re.match(r"(\d+)", str(passing))
+    return float(m.group(1)) if m else np.nan
+
+
+def _relevance_from_rank(rank_numeric: pd.Series) -> pd.Series:
+    """Graded relevance label for the lambdarank objective: 1st=3, 2nd=2,
+    3rd=1, everything else (incl. DNF)=0. Keeps the model's focus on 複勝
+    (top-3) while still teaching it to prefer 1st over 2nd over 3rd."""
+    return np.select(
+        [rank_numeric == 1, rank_numeric == 2, rank_numeric == 3],
+        [3, 2, 1],
+        default=0,
+    )
+
+
 def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     """Parse raw string columns (sex_age, horse_weight) and derive targets."""
     df = df.copy()
@@ -96,8 +124,19 @@ def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["rank_numeric"] = pd.to_numeric(df["rank"], errors="coerce")
     df["target_top3"] = (df["rank_numeric"] <= 3).astype(int)
     df["target_win"] = (df["rank_numeric"] == 1).astype(int)
+    df["relevance"] = _relevance_from_rank(df["rank_numeric"])
     df["is_dirt"] = df["surface"] == "ダート"
     df["distance_band"] = _distance_band(df["distance"])
+
+    # This race's own running style -- NEVER used directly as a feature (it's
+    # only known once the race has been run); only its leak-free historical
+    # average per horse (computed below) enters NUMERIC_FEATURE_COLUMNS.
+    if "passing" in df.columns:
+        early_position = df["passing"].apply(_parse_early_position)
+        field_size = df.groupby("race_id")["umaban"].transform("count")
+        df["early_position_ratio"] = early_position / field_size
+    else:
+        df["early_position_ratio"] = np.nan
     return df
 
 
@@ -142,6 +181,40 @@ def _expanding_entity_stats(df: pd.DataFrame, entity_col, prefix: str) -> pd.Dat
     return out
 
 
+def _expanding_mean(df: pd.DataFrame, entity_col, value_col: str, prefix: str) -> pd.DataFrame:
+    """Leak-free expanding mean of an arbitrary numeric column per entity
+    (e.g. a horse's historical average running-style ratio). Rows where
+    `value_col` is missing (e.g. a DNF with no recorded passing positions)
+    are skipped entirely rather than counted as 0, unlike the win/rank stats
+    in `_expanding_entity_stats` where 0 is a meaningful DNF penalty."""
+    cols = [entity_col] if isinstance(entity_col, str) else list(entity_col)
+    df = df.sort_values(["date", "race_id"])
+    value = df[value_col]
+    valid = value.notna().astype(int)
+    grp_key = [df[c] for c in cols]
+
+    cum_sum = value.fillna(0).groupby(grp_key).cumsum() - value.fillna(0)
+    cum_count = valid.groupby(grp_key).cumsum() - valid
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean_before = np.where(cum_count > 0, cum_sum / cum_count, np.nan)
+
+    return pd.DataFrame(
+        {f"{prefix}_n_before": cum_count.values, f"{prefix}_before": mean_before},
+        index=df.index,
+    )
+
+
+def _latest_mean(training_df: pd.DataFrame, entity_col, prefix: str) -> pd.DataFrame:
+    """Each entity's last training row's own '_before' mean, used as the
+    'latest known' value for an upcoming race. Unlike `_latest_entity_stats`,
+    this does not roll the last race's own result forward -- running style is
+    a slow-changing trait, so the one-race lag this leaves is negligible."""
+    cols = [entity_col] if isinstance(entity_col, str) else list(entity_col)
+    last = training_df.sort_values(["date", "race_id"]).groupby(cols, as_index=False).tail(1)
+    return last[cols + [f"{prefix}_before"]]
+
+
 def build_training_frame(raw: pd.DataFrame) -> pd.DataFrame:
     """Raw per-entry race results -> feature matrix (still carries id/meta columns)."""
     df = add_basic_fields(raw)
@@ -158,7 +231,11 @@ def build_training_frame(raw: pd.DataFrame) -> pd.DataFrame:
     df = df.join(horse_dirt_stats).join(jockey_dirt_stats)
 
     course_bias_stats = _expanding_entity_stats(df, COURSE_BIAS_GROUP_COLUMNS, "course_waku_bias")
-    return df.join(course_bias_stats)
+    df = df.join(course_bias_stats)
+
+    horse_style = _expanding_mean(df, "horse_id", "early_position_ratio", "horse_early_position_ratio")
+    horse_dirt_style = _expanding_mean(dirt_df, "horse_id", "early_position_ratio", "horse_dirt_early_position_ratio")
+    return df.join(horse_style).join(horse_dirt_style)
 
 
 def _latest_entity_stats(training_df: pd.DataFrame, entity_col, prefix: str) -> pd.DataFrame:
@@ -224,11 +301,16 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
 
     course_bias_latest = _latest_entity_stats(training_df, COURSE_BIAS_GROUP_COLUMNS, "course_waku_bias")
 
+    horse_style_latest = _latest_mean(training_df, "horse_id", "horse_early_position_ratio")
+    horse_dirt_style_latest = _latest_mean(dirt_history, "horse_id", "horse_dirt_early_position_ratio")
+
     df = df.merge(horse_latest, on="horse_id", how="left")
     df = df.merge(jockey_latest, on="jockey_id", how="left")
     df = df.merge(horse_dirt_latest, on="horse_id", how="left")
     df = df.merge(jockey_dirt_latest, on="jockey_id", how="left")
     df = df.merge(course_bias_latest, on=COURSE_BIAS_GROUP_COLUMNS, how="left")
+    df = df.merge(horse_style_latest, on="horse_id", how="left")
+    df = df.merge(horse_dirt_style_latest, on="horse_id", how="left")
 
     rename = {f"{col}_latest": col for col in (
         "horse_runs_before", "horse_win_rate_before", "horse_top3_rate_before", "horse_avg_rank_before",

@@ -14,13 +14,17 @@ import pandas as pd
 import streamlit as st
 
 from keiba_ai.features import build_prediction_frame, build_training_frame
-from keiba_ai.model import KeibaModel, train_model
+from keiba_ai.model import KeibaModel, softmax_scores, train_model
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig
 from keiba_ai.synth_data import generate_synthetic_results
 
 st.set_page_config(page_title="競馬予想AI", layout="wide")
 st.title("🏇 競馬予想AI")
-st.caption("複勝圏内(3着以内)に入る確率を予測するデモアプリです。娯楽・研究目的であり、賭け金の助言ではありません。")
+st.caption(
+    "同一レース内での相対的な強さを予測するランキングAIのデモアプリです。"
+    "表示される%は同レース内での相対的な優劣(softmax)であり、実際の的中確率ではありません。"
+    "娯楽・研究目的であり、賭け金の助言ではありません。"
+)
 
 REAL_MODEL_PATH = Path("models/model_dirt.joblib")
 REAL_HISTORY_PATH = Path("models/history.csv")
@@ -53,19 +57,31 @@ st.sidebar.markdown(
 )
 
 
+def add_predictions(model, feature_df: pd.DataFrame) -> pd.DataFrame:
+    feature_df = feature_df.copy()
+    scores = model.predict(feature_df)
+    feature_df["score"] = scores
+    feature_df["相対スコア(%)"] = (softmax_scores(scores) * 100).round(1)
+    return feature_df
+
+
 def show_result(feature_df: pd.DataFrame) -> None:
-    result = feature_df.sort_values("top3_probability(%)", ascending=False)
+    result = feature_df.sort_values("score", ascending=False)
     st.dataframe(
-        result[["umaban", "horse_name", "jockey", "kinryo", "top3_probability(%)"]],
+        result[["umaban", "horse_name", "jockey", "kinryo", "相対スコア(%)"]],
         use_container_width=True,
         hide_index=True,
     )
 
 
+def format_metrics(metrics: dict) -> str:
+    return f"NDCG@3: {metrics['valid_ndcg@3']:.3f}, 予測上位3頭の的中率(precision@3): {metrics['valid_precision@3']:.3f}"
+
+
 if mode == "デモデータで試す":
     with st.spinner("デモモデルを学習中..."):
         model, training_df = get_or_train_demo_model()
-    st.success(f"デモモデル学習完了 (検証AUC: {model.metrics['valid_auc']:.3f})")
+    st.success(f"デモモデル学習完了 ({format_metrics(model.metrics)})")
 
     race_ids = sorted(training_df["race_id"].unique())[-20:]
     chosen_race = st.selectbox("レースを選択(合成データ・直近20件)", race_ids)
@@ -76,8 +92,7 @@ if mode == "デモデータで試す":
     shutuba = training_df[training_df["race_id"] == chosen_race][shutuba_cols].copy()
     history = training_df[training_df["race_id"] != chosen_race]
 
-    feature_df = build_prediction_frame(shutuba, history)
-    feature_df["top3_probability(%)"] = (model.predict(feature_df) * 100).round(1)
+    feature_df = add_predictions(model, build_prediction_frame(shutuba, history))
     show_result(feature_df)
     st.caption("※ 合成生成した架空のレースです。実データではありません。")
 
@@ -99,7 +114,7 @@ elif mode == "実データモデルを使う(学習済み)":
     dirt_history = history_df[history_df["surface"] == "ダート"]
     st.success(
         f"学習済み実データモデルを読み込みました "
-        f"(検証AUC: {model.metrics['valid_auc']:.3f}、"
+        f"({format_metrics(model.metrics)}、"
         f"学習データ: ダート{dirt_history['race_id'].nunique()}レース、"
         f"{history_df['date'].min():%Y-%m-%d}〜{history_df['date'].max():%Y-%m-%d})"
     )
@@ -119,8 +134,7 @@ elif mode == "実データモデルを使う(学習済み)":
     # race's own result would leak into the stats used to predict it.
     history_for_pred = history_df[history_df["date"] < info["date"]]
 
-    feature_df = build_prediction_frame(shutuba, history_for_pred)
-    feature_df["top3_probability(%)"] = (model.predict(feature_df) * 100).round(1)
+    feature_df = add_predictions(model, build_prediction_frame(shutuba, history_for_pred))
     show_result(feature_df)
 
     with st.expander("実際の着順と比較"):
@@ -137,11 +151,10 @@ elif mode == "CSVをアップロード":
         training_df = build_training_frame(raw)
         with st.spinner("モデルを学習中..."):
             model = train_model(training_df)
-        st.success(f"学習完了 (検証AUC: {model.metrics['valid_auc']:.3f})")
+        st.success(f"学習完了 ({format_metrics(model.metrics)})")
 
         shutuba = pd.read_csv(shutuba_file)
-        feature_df = build_prediction_frame(shutuba, training_df)
-        feature_df["top3_probability(%)"] = (model.predict(feature_df) * 100).round(1)
+        feature_df = add_predictions(model, build_prediction_frame(shutuba, training_df))
         show_result(feature_df)
 
 else:
@@ -192,7 +205,7 @@ else:
         training_df = build_training_frame(raw)
         with st.spinner("モデルを学習中..."):
             model = train_model(training_df)
-        st.success(f"学習完了 (検証AUC: {model.metrics['valid_auc']:.3f})")
+        st.success(f"学習完了 ({format_metrics(model.metrics)})")
 
         try:
             shutuba_parsed = scraper.fetch_shutuba(shutuba_url)
@@ -207,6 +220,5 @@ else:
         shutuba_df["track_condition"] = smeta.get("track_condition", "")
         shutuba_df["place"] = smeta.get("place") or shutuba_place
 
-        feature_df = build_prediction_frame(shutuba_df, training_df)
-        feature_df["top3_probability(%)"] = (model.predict(feature_df) * 100).round(1)
+        feature_df = add_predictions(model, build_prediction_frame(shutuba_df, training_df))
         show_result(feature_df)

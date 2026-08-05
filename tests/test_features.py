@@ -82,6 +82,47 @@ def test_sex_age_and_weight_parsing():
     assert row["horse_weight_diff"] == 0.0
 
 
+def _running_style_raw() -> pd.DataFrame:
+    """Two 4-horse races: hA always leads early (passing starts with 1),
+    hB always trails (passing starts with 4)."""
+    common = dict(place="東京", surface="ダート", distance=1600, track_condition="良", kinryo=55.0)
+    rows = []
+    for race_id, date_str in [("rX", "2023-03-01"), ("rY", "2023-03-08")]:
+        rows.append(dict(common, race_id=race_id, date=date_str, waku=1, umaban=1, horse_id="hA",
+                          horse_name="HA", sex_age="牡4", jockey_id="jA", jockey="JA", trainer_id="tA",
+                          trainer="TA", horse_weight="480(0)", odds=2.0, popularity=1, rank=1,
+                          last_3f=35.0, passing="1-1"))
+        rows.append(dict(common, race_id=race_id, date=date_str, waku=2, umaban=2, horse_id="hB",
+                          horse_name="HB", sex_age="牡5", jockey_id="jB", jockey="JB", trainer_id="tB",
+                          trainer="TB", horse_weight="470(0)", odds=3.0, popularity=2, rank=2,
+                          last_3f=35.2, passing="4-4"))
+        rows.append(dict(common, race_id=race_id, date=date_str, waku=3, umaban=3, horse_id="hC",
+                          horse_name="HC", sex_age="牡6", jockey_id="jC", jockey="JC", trainer_id="tC",
+                          trainer="TC", horse_weight="460(0)", odds=4.0, popularity=3, rank=3,
+                          last_3f=35.4, passing="2-2"))
+        rows.append(dict(common, race_id=race_id, date=date_str, waku=4, umaban=4, horse_id="hD",
+                          horse_name="HD", sex_age="牡7", jockey_id="jD", jockey="JD", trainer_id="tD",
+                          trainer="TD", horse_weight="450(0)", odds=5.0, popularity=4, rank=4,
+                          last_3f=35.6, passing="3-3"))
+    return pd.DataFrame(rows)
+
+
+def test_running_style_reflects_early_corner_position():
+    df = build_training_frame(_running_style_raw())
+
+    rX_hA = df[(df["race_id"] == "rX") & (df["horse_id"] == "hA")].iloc[0]
+    assert pd.isna(rX_hA["horse_early_position_ratio_before"])  # no history yet
+
+    # hA led at the 1st corner in rX (1st of 4 -> ratio 0.25); by rY that
+    # should be hA's entire prior history.
+    rY_hA = df[(df["race_id"] == "rY") & (df["horse_id"] == "hA")].iloc[0]
+    assert rY_hA["horse_early_position_ratio_before"] == 0.25
+
+    # hB trailed (4th of 4 -> ratio 1.0) in rX.
+    rY_hB = df[(df["race_id"] == "rY") & (df["horse_id"] == "hB")].iloc[0]
+    assert rY_hB["horse_early_position_ratio_before"] == 1.0
+
+
 def test_distance_band_bucketing():
     df = build_training_frame(_sample_raw())
     assert df[df["race_id"] == "r1"]["distance_band"].iloc[0] == "長距離"  # 2000m
