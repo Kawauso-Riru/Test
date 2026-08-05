@@ -21,10 +21,12 @@ Usage:
 """
 import argparse
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -64,12 +66,26 @@ def main() -> None:
         )
     )
 
+    def fetch_with_retry(fn, *a, retries: int = 2, backoff: float = 3.0):
+        """Retry transient network errors (timeouts, connection resets); skip on
+        repeated failure or a robots.txt denial rather than aborting the whole run."""
+        for attempt in range(retries + 1):
+            try:
+                return fn(*a)
+            except RobotsDisallowedError as exc:
+                print(f"  skip {a}: {exc}")
+                return None
+            except requests.RequestException as exc:
+                if attempt == retries:
+                    print(f"  skip {a} after {retries + 1} attempts: {exc}")
+                    return None
+                time.sleep(backoff * (attempt + 1))
+        return None
+
     race_ids = []
     for d in daterange(start, end):
-        try:
-            ids = scraper.list_race_ids_for_date(d.strftime("%Y%m%d"))
-        except RobotsDisallowedError as exc:
-            print(f"skip {d}: {exc}")
+        ids = fetch_with_retry(scraper.list_race_ids_for_date, d.strftime("%Y%m%d"))
+        if ids is None:
             continue
         jra_ids = [i for i in ids if is_jra_race_id(i)]
         if jra_ids:
@@ -81,14 +97,13 @@ def main() -> None:
 
     print(f"collected {len(race_ids)} JRA race ids, fetching results...")
 
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
     rows = []
     for i, race_id in enumerate(race_ids, start=1):
-        try:
-            parsed = scraper.fetch_race_result(scraper.race_result_url(race_id))
-        except RobotsDisallowedError as exc:
-            print(f"skip {race_id}: {exc}")
-            continue
-        if not parsed["entries"]:
+        parsed = fetch_with_retry(scraper.fetch_race_result, scraper.race_result_url(race_id))
+        if parsed is None or not parsed["entries"]:
             continue
         meta = parsed["meta"]
         for entry in parsed["entries"]:
@@ -101,6 +116,7 @@ def main() -> None:
             rows.append(entry)
         if i % 20 == 0:
             print(f"  {i}/{len(race_ids)} races fetched")
+            pd.DataFrame(rows).to_csv(out_path, index=False)  # checkpoint in case of a later failure
 
     if not rows:
         raise SystemExit("no race entries collected -- check the date range and network access")
@@ -110,8 +126,6 @@ def main() -> None:
     n_turf = df[df["surface"] == "芝"]["race_id"].nunique()
     print(f"races: {df['race_id'].nunique()} total ({n_dirt} dirt, {n_turf} turf), {len(df)} entries")
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
     print(f"wrote -> {out_path}")
 
