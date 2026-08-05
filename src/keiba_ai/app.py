@@ -14,13 +14,16 @@ import pandas as pd
 import streamlit as st
 
 from keiba_ai.features import build_prediction_frame, build_training_frame
-from keiba_ai.model import train_model
+from keiba_ai.model import KeibaModel, train_model
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig
 from keiba_ai.synth_data import generate_synthetic_results
 
 st.set_page_config(page_title="競馬予想AI", layout="wide")
 st.title("🏇 競馬予想AI")
 st.caption("複勝圏内(3着以内)に入る確率を予測するデモアプリです。娯楽・研究目的であり、賭け金の助言ではありません。")
+
+REAL_MODEL_PATH = Path("models/model_dirt.joblib")
+REAL_HISTORY_PATH = Path("models/history.csv")
 
 
 @st.cache_resource
@@ -31,10 +34,17 @@ def get_or_train_demo_model():
     return model, training_df
 
 
+@st.cache_resource
+def load_real_dirt_model():
+    model = KeibaModel.load(REAL_MODEL_PATH)
+    history_df = pd.read_csv(REAL_HISTORY_PATH, parse_dates=["date"])
+    return model, history_df
+
+
 st.sidebar.header("設定")
 mode = st.sidebar.radio(
     "使い方を選択",
-    ["デモデータで試す", "CSVをアップロード", "URLから取得(スクレイピング)"],
+    ["デモデータで試す", "実データモデルを使う(学習済み)", "CSVをアップロード", "URLから取得(スクレイピング)"],
 )
 st.sidebar.markdown(
     "---\n"
@@ -71,6 +81,52 @@ if mode == "デモデータで試す":
     show_result(feature_df)
     st.caption("※ 合成生成した架空のレースです。実データではありません。")
 
+elif mode == "実データモデルを使う(学習済み)":
+    if not REAL_MODEL_PATH.exists() or not REAL_HISTORY_PATH.exists():
+        st.warning(
+            "学習済みモデルが見つかりません(`models/model_dirt.joblib` / "
+            "`models/history.csv`)。先にコマンドラインで収集・学習してください:\n\n"
+            "```bash\n"
+            "python scripts/scrape_jra_dirt_results.py \\\n"
+            "    --start-date 20240101 --end-date 20240630 --out data/jra_results.csv\n"
+            "python scripts/train_model.py --data data/jra_results.csv --dirt-only \\\n"
+            "    --model-out models/model_dirt.joblib --history-out models/history.csv\n"
+            "```"
+        )
+        st.stop()
+
+    model, history_df = load_real_dirt_model()
+    dirt_history = history_df[history_df["surface"] == "ダート"]
+    st.success(
+        f"学習済み実データモデルを読み込みました "
+        f"(検証AUC: {model.metrics['valid_auc']:.3f}、"
+        f"学習データ: ダート{dirt_history['race_id'].nunique()}レース、"
+        f"{history_df['date'].min():%Y-%m-%d}〜{history_df['date'].max():%Y-%m-%d})"
+    )
+
+    race_ids = sorted(dirt_history["race_id"].unique())[-50:]
+    chosen_race = st.selectbox("ダートレースを選択(履歴データの直近50件)", race_ids, index=len(race_ids) - 1)
+    race_rows = dirt_history[dirt_history["race_id"] == chosen_race]
+    info = race_rows.iloc[0]
+    st.caption(f"{info['date']:%Y-%m-%d} {info['place']} {info['surface']}{info['distance']:.0f}m {info['track_condition']}")
+
+    shutuba_cols = [
+        "horse_id", "jockey_id", "umaban", "waku", "horse_name", "jockey",
+        "sex_age", "kinryo", "horse_weight", "surface", "distance", "track_condition", "place",
+    ]
+    shutuba = race_rows[shutuba_cols].copy()
+    # Only use history strictly before this race's date -- otherwise the
+    # race's own result would leak into the stats used to predict it.
+    history_for_pred = history_df[history_df["date"] < info["date"]]
+
+    feature_df = build_prediction_frame(shutuba, history_for_pred)
+    feature_df["top3_probability(%)"] = (model.predict(feature_df) * 100).round(1)
+    show_result(feature_df)
+
+    with st.expander("実際の着順と比較"):
+        actual = race_rows[["umaban", "horse_name", "rank"]].sort_values("rank")
+        st.dataframe(actual, use_container_width=True, hide_index=True)
+
 elif mode == "CSVをアップロード":
     st.write("学習用の過去成績CSVと、予測対象の出馬表CSVをそれぞれアップロードしてください。列名は keiba_ai.parser の出力に合わせてください。")
     hist_file = st.file_uploader("過去成績CSV", type="csv", key="hist")
@@ -96,6 +152,11 @@ else:
     )
     result_urls_text = st.text_area("過去レース結果ページ URL(1行1URL)")
     shutuba_url = st.text_input("予測したい出馬表ページ URL")
+    shutuba_place = st.text_input(
+        "出馬表の開催場(例: 中山)",
+        value="",
+        help="出馬表ページ(race.netkeiba.com)からは開催場を自動取得できないため、手入力で補ってください。",
+    )
     min_interval = st.slider("最小リクエスト間隔(秒)", 1.0, 10.0, 3.0)
 
     if st.button("取得して予測"):
@@ -114,6 +175,9 @@ else:
                 for entry in parsed["entries"]:
                     entry.update(meta)
                     entry["race_id"] = url
+                    # db.netkeiba.com result pages carry their own calendar date
+                    # in meta; fall back to today only if that couldn't be parsed.
+                    entry.setdefault("date", pd.Timestamp.today().strftime("%Y-%m-%d"))
                     rows.append(entry)
                 progress.progress((i + 1) / len(result_urls))
         except RobotsDisallowedError as exc:
@@ -125,7 +189,6 @@ else:
             st.stop()
 
         raw = pd.DataFrame(rows)
-        raw["date"] = pd.Timestamp.today().normalize()
         training_df = build_training_frame(raw)
         with st.spinner("モデルを学習中..."):
             model = train_model(training_df)
@@ -142,7 +205,7 @@ else:
         shutuba_df["surface"] = smeta.get("surface", "")
         shutuba_df["distance"] = smeta.get("distance")
         shutuba_df["track_condition"] = smeta.get("track_condition", "")
-        shutuba_df["place"] = smeta.get("race_name", "")
+        shutuba_df["place"] = smeta.get("place") or shutuba_place
 
         feature_df = build_prediction_frame(shutuba_df, training_df)
         feature_df["top3_probability(%)"] = (model.predict(feature_df) * 100).round(1)
