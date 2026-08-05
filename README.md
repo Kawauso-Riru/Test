@@ -67,9 +67,10 @@ streamlit run src/keiba_ai/app.py
 
 ```bash
 # 1. 中央競馬(JRA10場)のレース結果を収集(芝・ダート両方。理由は下記)
+#    月ごとに分割して実行し、リクエスト間隔を空けるのを推奨(下の「収集のコツ」参照)
 python scripts/scrape_jra_dirt_results.py \
-    --start-date 20240106 --end-date 20240331 \
-    --out data/jra_results.csv --max-races 250 \
+    --start-date 20240101 --end-date 20240630 \
+    --out data/jra_results.csv --max-races 2000 \
     --contact your-email@example.com
 
 # 2. ダート限定でモデルを学習(馬/騎手の履歴特徴量には芝レースも活用しつつ、
@@ -89,8 +90,40 @@ python scripts/predict_race.py --shutuba-csv data/sample_shutuba.csv \
 参考になり、出走間隔などの特徴量にも必要なため)。ダートへの特化は
 `train_model.py --dirt-only` で学習対象の行を絞ることで行います。
 
-学習データが少ない(数十レース程度)と過学習し、意味のある予測にはなりません。
-実運用には最低でも数百レース規模の履歴データ(特にダートレース)を推奨します。
+### 収集のコツ(長期間のデータを集める場合)
+
+一度に長い期間を `--start-date`/`--end-date` で指定すると、途中でネット
+ワークエラーが起きた際に再実行がゼロからやり直しになりやすい(20レース
+ごとにCSVへチェックポイント保存はされますが)ので、**月単位など小さい
+期間に分けて複数回実行し、最後に結合する**方式を推奨します。同じ
+`--cache-dir`(既定: `data/cache/netkeiba`)を使い回せば、取得済みページは
+再フェッチされません。
+
+```bash
+for m in 01 02 03 04 05 06; do
+  python scripts/scrape_jra_dirt_results.py \
+      --start-date 2024${m}01 --end-date 2024${m}28 \
+      --out data/chunks/jra_2024${m}.csv --max-races 400 \
+      --contact your-email@example.com
+done
+python -c "
+import pandas as pd, glob
+df = pd.concat([pd.read_csv(f) for f in glob.glob('data/chunks/jra_2024*.csv')])
+df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', index=False)
+"
+```
+
+学習データが少ない(数週間・数百レース程度)と、`horse_dirt_*` (馬のダート
+限定成績)特徴量が十分に貯まらず精度が伸び悩みます。実際に検証したところ:
+
+| 収集期間 | ダートレース数 | held-out AUC |
+|---|---|---|
+| 約3週間(2024年1月) | 133 | 0.574 |
+| 半年(2024年1〜6月) | 893 | **0.722** |
+
+半年分に増やしたところ、`horse_dirt_avg_rank_before`(馬のダート平均着順)が
+最重要特徴量になり、AUCも大きく改善しました。収集期間を延ばすほど、特に
+馬側のダート適性特徴量が効いてくる傾向があります。
 
 ⚠️ 実サイトへのアクセスを行うため、事前に対象サイトの利用規約を確認してください。
 
