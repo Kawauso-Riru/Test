@@ -61,7 +61,9 @@ streamlit run src/keiba_ai/app.py
 ```
 
 サイドバーで「デモデータで試す」を選べば、その場でモデルを学習して
-架空レースの予測結果を確認できます。
+架空レースの予測結果を確認できます。`models/model_dirt.joblib` /
+`models/history.csv` を用意済みなら「実データモデルを使う(学習済み)」
+モードで、再学習なしに実データの予測をすぐ試せます(下記参照)。
 
 ## 実データを使う場合(中央競馬・ダート特化)
 
@@ -74,13 +76,15 @@ python scripts/scrape_jra_dirt_results.py \
     --contact your-email@example.com
 
 # 2. ダート限定でモデルを学習(馬/騎手の履歴特徴量には芝レースも活用しつつ、
-#    学習対象の行だけダートレースに絞る)
+#    学習対象の行だけダートレースに絞る)。model_dirt.joblib という名前で
+#    保存すると、Streamlit の「実データモデルを使う」モードがそのまま拾う。
 python scripts/train_model.py --data data/jra_results.csv --dirt-only \
-    --model-out models/model.joblib --history-out models/history.csv
+    --model-out models/model_dirt.joblib --history-out models/history.csv
 
-# 3. 予測
+# 3. 予測(CLI、または streamlit run src/keiba_ai/app.py の
+#    「実データモデルを使う(学習済み)」モードでも同じモデルを使える)
 python scripts/predict_race.py --shutuba-csv data/sample_shutuba.csv \
-    --model models/model.joblib --history models/history.csv
+    --model models/model_dirt.joblib --history models/history.csv
 ```
 
 `scrape_jra_dirt_results.py` は `db.netkeiba.com` の日別レース一覧ページを
@@ -100,9 +104,9 @@ python scripts/predict_race.py --shutuba-csv data/sample_shutuba.csv \
 再フェッチされません。
 
 ```bash
-for m in 01 02 03 04 05 06; do
+for m in 01 02 03 04 05 06 07 08 09 10 11 12; do
   python scripts/scrape_jra_dirt_results.py \
-      --start-date 2024${m}01 --end-date 2024${m}28 \
+      --start-date 2024${m}01 --end-date 2024${m}31 \
       --out data/chunks/jra_2024${m}.csv --max-races 400 \
       --contact your-email@example.com
 done
@@ -119,29 +123,51 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 | 収集期間 | ダートレース数 | held-out AUC |
 |---|---|---|
 | 約3週間(2024年1月) | 133 | 0.574 |
-| 半年(2024年1〜6月) | 893 | **0.722** |
+| 半年(2024年1〜6月) | 893 | 0.722 |
+| **1年(2024年1〜12月)** | **1,660** | **0.738** |
 
-半年分に増やしたところ、`horse_dirt_avg_rank_before`(馬のダート平均着順)が
-最重要特徴量になり、AUCも大きく改善しました。収集期間を延ばすほど、特に
-馬側のダート適性特徴量が効いてくる傾向があります。
+収集期間を延ばすほど、特に `horse_dirt_avg_rank_before`(馬のダート平均着順)
+のような馬側のダート適性特徴量が効いてきます。1年分では
+`course_waku_bias_*`(コース×距離帯×枠のバイアス、下記参照)も特徴量重要度の
+上位に入り、コース・枠順による構造的な有利不利も捉えられるようになりました。
 
 ⚠️ 実サイトへのアクセスを行うため、事前に対象サイトの利用規約を確認してください。
 
 ## モデルについて
 
 - 目的変数: `target_top3` (3着以内なら1、それ以外は0) の二値分類 (LightGBM)。
-- 特徴量: 斤量・枠番・馬番・馬体重(増減)・年齢・距離・馬場状態・コース種別
-  に加え、**その馬/騎手のその時点までの成績を集計した「リークなし」特徴量**
+- 基本特徴量: 斤量・枠番・馬番・馬体重(増減)・年齢・距離・馬場状態・コース・
+  性別に加え、**その馬/騎手のその時点までの成績を集計した「リークなし」特徴量**
   (出走数・勝率・複勝率・平均着順・前走からの間隔)を使用します。学習時は
   `groupby + cumsum` で各レースより前のデータのみから計算し、未来の結果が
-  紛れ込まないようにしています。
+  紛れ込まないようにしています。予測時(`build_prediction_frame`)には、その
+  馬/騎手の**直近レースの結果まで織り込んだ**最新の統計を使います。
 - **ダート特化特徴量**: 上記に加え、`horse_dirt_*` / `jockey_dirt_*`
   (ダートレースのみに絞った出走数・勝率・複勝率・平均着順)を持ちます。
   芝レースを挟んでも正しくスキップされ、その馬/騎手の直近の**ダートでの**
   実績のみを反映します(`tests/test_features.py` で検証)。芝適性とダート
   適性は必ずしも一致しないため、両者を区別して学習させています。
+- **距離帯・コースバイアス特徴量**: `distance_band`(短距離≦1400m/マイル
+  ≦1800m/長距離)のカテゴリと、`course_waku_bias_*`
+  ((開催場, 芝/ダート, 距離帯, 枠番)の組み合わせごとの、リークなし展開勝率・
+  複勝率・平均着順)を持ちます。これは特定の馬や騎手の実力とは独立に、
+  「このコース・距離ではこの枠が構造的に有利/不利」といったコース固有の
+  傾向を捉えるための特徴量です。1年分のデータで学習したところ、この
+  特徴量群は特徴量重要度の上位に入り、実際に予測に寄与していることを
+  確認しました。
 - 検証は `GroupShuffleSplit` でレース単位に分割し(同一レースの馬が
   学習/検証に分かれて跨がらないように)、held-outレースでのAUCを表示します。
+
+## Streamlit UIのモード
+
+- **デモデータで試す**: 合成データでその場学習・予測(ネットワーク不要)。
+- **実データモデルを使う(学習済み)**: `models/model_dirt.joblib` /
+  `models/history.csv` を読み込み、再学習せずに実データでの予測を確認。
+  履歴データ内のダートレースを選んで予測 vs 実際の着順を見比べられます。
+  事前に上記の収集・学習コマンドを実行しておく必要があります。
+- **CSVをアップロード**: 自前の過去成績CSV・出馬表CSVで学習・予測。
+- **URLから取得(スクレイピング)**: netkeibaのURLをその場で取得して学習・予測
+  (少数URLでは精度は出ません。デモ用途)。
 
 ## テスト
 
