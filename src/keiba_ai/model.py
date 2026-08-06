@@ -29,6 +29,24 @@ from .features import ALL_FEATURE_COLUMNS, CATEGORICAL_FEATURE_COLUMNS
 
 RELEVANCE_COLUMN = "relevance"
 
+# Found via scripts/tune_hyperparams.py's random search over the 1-year JRA
+# dirt dataset (see README for the comparison table); pass `params=` to
+# train_model() to override for experimentation.
+DEFAULT_PARAMS = {
+    "objective": "lambdarank",
+    "metric": "ndcg",
+    "eval_at": [3],
+    "learning_rate": 0.02,
+    "num_leaves": 31,
+    "min_data_in_leaf": 20,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "lambda_l1": 0.1,
+    "lambda_l2": 0.0,
+    "verbose": -1,
+}
+
 
 @dataclass
 class CategoryEncoder:
@@ -54,9 +72,10 @@ class KeibaModel:
     booster: lgb.Booster
     encoder: CategoryEncoder
     metrics: dict
+    feature_columns: list = None  # None (old pickles) means ALL_FEATURE_COLUMNS
 
     def _prepare(self, df: pd.DataFrame) -> pd.DataFrame:
-        X = df[ALL_FEATURE_COLUMNS].copy()
+        X = df[self.feature_columns or ALL_FEATURE_COLUMNS].copy()
         return self.encoder.transform(X)
 
     def predict(self, df: pd.DataFrame) -> np.ndarray:
@@ -97,12 +116,26 @@ def _precision_at_k(valid_df: pd.DataFrame, score_col: str, k: int = 3) -> float
     return hits / total if total else float("nan")
 
 
-def train_model(df: pd.DataFrame, num_boost_round: int = 300) -> KeibaModel:
-    """Train a LightGBM LambdaMART ranker, holding out whole races (grouped split)."""
+def train_model(
+    df: pd.DataFrame,
+    num_boost_round: int = 300,
+    params: dict | None = None,
+    seed: int = 42,
+    feature_columns: list | None = None,
+) -> KeibaModel:
+    """Train a LightGBM LambdaMART ranker, holding out whole races (grouped split).
+
+    `params` overrides/extends DEFAULT_PARAMS (e.g. for hyperparameter search);
+    `seed` controls the train/valid race split, so a tuning sweep can hold it
+    fixed for an apples-to-apples comparison across param combos. `feature_columns`
+    restricts which columns are used (e.g. drop odds_numeric/popularity_numeric
+    to train a model that doesn't lean on the market's own odds -- see README).
+    """
+    feature_columns = feature_columns or ALL_FEATURE_COLUMNS
     df = df.dropna(subset=[RELEVANCE_COLUMN]).reset_index(drop=True)
     encoder = CategoryEncoder.fit(df, CATEGORICAL_FEATURE_COLUMNS)
 
-    splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
     train_idx, valid_idx = next(splitter.split(df, df[RELEVANCE_COLUMN], groups=df["race_id"]))
 
     # lambdarank needs each race's rows contiguous, with a "group" array
@@ -110,31 +143,24 @@ def train_model(df: pd.DataFrame, num_boost_round: int = 300) -> KeibaModel:
     train_df = df.iloc[train_idx].sort_values("race_id")
     valid_df = df.iloc[valid_idx].sort_values("race_id")
 
-    X_train = encoder.transform(train_df[ALL_FEATURE_COLUMNS])
-    X_valid = encoder.transform(valid_df[ALL_FEATURE_COLUMNS])
+    X_train = encoder.transform(train_df[feature_columns])
+    X_valid = encoder.transform(valid_df[feature_columns])
     train_group = train_df.groupby("race_id", sort=False).size().values
     valid_group = valid_df.groupby("race_id", sort=False).size().values
+    categorical_in_use = [c for c in CATEGORICAL_FEATURE_COLUMNS if c in feature_columns]
 
     train_set = lgb.Dataset(
         X_train, label=train_df[RELEVANCE_COLUMN], group=train_group,
-        categorical_feature=CATEGORICAL_FEATURE_COLUMNS,
+        categorical_feature=categorical_in_use,
     )
     valid_set = lgb.Dataset(
         X_valid, label=valid_df[RELEVANCE_COLUMN], group=valid_group,
-        categorical_feature=CATEGORICAL_FEATURE_COLUMNS, reference=train_set,
+        categorical_feature=categorical_in_use, reference=train_set,
     )
 
-    params = {
-        "objective": "lambdarank",
-        "metric": "ndcg",
-        "eval_at": [3],
-        "learning_rate": 0.05,
-        "num_leaves": 31,
-        "min_data_in_leaf": 20,
-        "verbose": -1,
-    }
+    resolved_params = {**DEFAULT_PARAMS, **(params or {})}
     booster = lgb.train(
-        params,
+        resolved_params,
         train_set,
         num_boost_round=num_boost_round,
         valid_sets=[valid_set],
@@ -153,4 +179,4 @@ def train_model(df: pd.DataFrame, num_boost_round: int = 300) -> KeibaModel:
         "n_train_races": int(len(train_group)),
         "n_valid_races": int(len(valid_group)),
     }
-    return KeibaModel(booster=booster, encoder=encoder, metrics=metrics)
+    return KeibaModel(booster=booster, encoder=encoder, metrics=metrics, feature_columns=feature_columns)

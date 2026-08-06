@@ -1,0 +1,64 @@
+name: Weekly dataset update and retrain
+
+# Keeps data/jra_results.csv current and republishes a freshly retrained
+# model. Runs scripts/update_dataset.py, which scrapes only the JRA races
+# published since the dataset's last recorded date (see the script's
+# docstring) -- so a normal weekly run is a small, quick delta, not a
+# full re-scrape.
+#
+# Requires a repository variable SCRAPER_CONTACT_EMAIL (Settings > Secrets
+# and variables > Actions > Variables) with a real contact address, embedded
+# in the scraper's User-Agent per the target site's expectations -- see
+# README.md's scraping disclaimer before enabling this on a schedule.
+
+on:
+  schedule:
+    # Monday 18:00 UTC = Tuesday 03:00 JST, well after the weekend's JRA
+    # racing (Sat/Sun, the bulk of the JRA calendar) has finished and results
+    # have posted.
+    - cron: "0 18 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - name: Update dataset and retrain
+        run: |
+          python scripts/update_dataset.py \
+            --data data/jra_results.csv \
+            --model-out models/model_dirt.joblib \
+            --history-out models/history.csv \
+            --min-interval 1.5 \
+            --contact "${{ vars.SCRAPER_CONTACT_EMAIL || 'set-your-email-here' }}"
+
+      - name: Commit updated dataset
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/jra_results.csv
+          git diff --cached --quiet || git commit -m "chore: weekly JRA dataset update [skip ci]"
+          git push
+
+      # models/model_dirt.joblib and models/history.csv are reproducible from
+      # data/jra_results.csv (see .gitignore) so they aren't committed --
+      # published here as a downloadable run artifact instead.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model_dirt
+          path: |
+            models/model_dirt.joblib
+            models/history.csv
+          retention-days: 90

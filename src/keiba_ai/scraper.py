@@ -18,6 +18,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import requests
+from bs4 import BeautifulSoup
 
 from .parser import parse_race_result_html, parse_shutuba_html
 
@@ -130,6 +131,34 @@ class PoliteScraper:
     @staticmethod
     def race_result_url(race_id: str) -> str:
         return f"https://db.netkeiba.com/race/{race_id}/"
+
+    def list_upcoming_races_for_date(self, date: str) -> list:
+        """date: 'YYYYMMDD'. Unlike list_race_ids_for_date (db.netkeiba.com,
+        a *results* database -- empty for races that haven't run yet), this
+        hits race.netkeiba.com's live schedule endpoint, which lists races
+        for the current/upcoming meeting once the racing office has
+        published the card (typically a few days ahead of race day, not
+        further out than that).
+
+        Returns [{"race_id": ..., "place": ...}, ...], JRA and regional/NAR
+        meetings mixed together -- filter with is_jra_race_id() for JRA-only.
+        Empty list if no card is published for that date yet.
+        """
+        html = self.fetch(f"https://race.netkeiba.com/top/race_list_sub.html?kaisai_date={date}")
+        soup = BeautifulSoup(html, "lxml")
+        races = []
+        for dl in soup.find_all("dl", class_="RaceList_DataList"):
+            title_tag = dl.find(class_="RaceList_DataTitle")
+            title_text = title_tag.get_text(" ", strip=True) if title_tag else ""
+            place_match = re.search(r"\d+回\s*(\S+?)\s*\d+日目", title_text)
+            place = place_match.group(1) if place_match else ""
+            for race_id in sorted(set(re.findall(r"race_id=(\d{12})", str(dl)))):
+                races.append({"race_id": race_id, "place": place})
+        return races
+
+    @staticmethod
+    def shutuba_url(race_id: str) -> str:
+        return f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
 
 
 def re_sub_safe(url: str) -> str:
