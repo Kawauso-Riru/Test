@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from keiba_ai.features import build_prediction_frame, build_training_frame
+from keiba_ai.io import read_race_csv
 from keiba_ai.model import KeibaModel, softmax_scores, train_model
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig
 from keiba_ai.synth_data import generate_synthetic_results
@@ -41,7 +42,7 @@ def get_or_train_demo_model():
 @st.cache_resource
 def load_real_dirt_model():
     model = KeibaModel.load(REAL_MODEL_PATH)
-    history_df = pd.read_csv(REAL_HISTORY_PATH, parse_dates=["date"])
+    history_df = read_race_csv(REAL_HISTORY_PATH, parse_dates=["date"])
     return model, history_df
 
 
@@ -86,8 +87,9 @@ if mode == "デモデータで試す":
     race_ids = sorted(training_df["race_id"].unique())[-20:]
     chosen_race = st.selectbox("レースを選択(合成データ・直近20件)", race_ids)
     shutuba_cols = [
-        "horse_id", "jockey_id", "umaban", "waku", "horse_name", "jockey",
+        "horse_id", "jockey_id", "trainer_id", "umaban", "waku", "horse_name", "jockey",
         "sex_age", "kinryo", "horse_weight", "surface", "distance", "track_condition", "place",
+        "popularity", "odds",
     ]
     shutuba = training_df[training_df["race_id"] == chosen_race][shutuba_cols].copy()
     history = training_df[training_df["race_id"] != chosen_race]
@@ -126,8 +128,9 @@ elif mode == "実データモデルを使う(学習済み)":
     st.caption(f"{info['date']:%Y-%m-%d} {info['place']} {info['surface']}{info['distance']:.0f}m {info['track_condition']}")
 
     shutuba_cols = [
-        "horse_id", "jockey_id", "umaban", "waku", "horse_name", "jockey",
+        "horse_id", "jockey_id", "trainer_id", "umaban", "waku", "horse_name", "jockey",
         "sex_age", "kinryo", "horse_weight", "surface", "distance", "track_condition", "place",
+        "popularity", "odds",
     ]
     shutuba = race_rows[shutuba_cols].copy()
     # Only use history strictly before this race's date -- otherwise the
@@ -147,13 +150,13 @@ elif mode == "CSVをアップロード":
     shutuba_file = st.file_uploader("出馬表CSV", type="csv", key="shutuba")
 
     if hist_file and shutuba_file:
-        raw = pd.read_csv(hist_file)
+        raw = read_race_csv(hist_file)
         training_df = build_training_frame(raw)
         with st.spinner("モデルを学習中..."):
             model = train_model(training_df)
         st.success(f"学習完了 ({format_metrics(model.metrics)})")
 
-        shutuba = pd.read_csv(shutuba_file)
+        shutuba = read_race_csv(shutuba_file)
         feature_df = add_predictions(model, build_prediction_frame(shutuba, training_df))
         show_result(feature_df)
 

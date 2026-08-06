@@ -57,6 +57,21 @@ NUMERIC_FEATURE_COLUMNS = [
     # without needing a hand-built course-x-style aggregate.
     "horse_early_position_ratio_before",
     "horse_dirt_early_position_ratio_before",
+    # Trainer history, mirroring jockey_*/jockey_dirt_* exactly.
+    "trainer_runs_before",
+    "trainer_win_rate_before",
+    "trainer_top3_rate_before",
+    "trainer_dirt_runs_before",
+    "trainer_dirt_win_rate_before",
+    "trainer_dirt_top3_rate_before",
+    # Market consensus (popularity rank / win odds) at race time. Legitimate
+    # pre-race information (betting closes at post time, not after), and
+    # historically one of the single strongest signals in horse racing --
+    # but often unavailable this far ahead of an upcoming race (shutuba
+    # pages show a "**" placeholder until odds firm up), so treat as
+    # optional/frequently-missing rather than always-on.
+    "popularity_numeric",
+    "odds_numeric",
 ]
 
 CATEGORICAL_FEATURE_COLUMNS = ["sex", "surface", "track_condition", "place", "distance_band"]
@@ -97,6 +112,30 @@ def _parse_early_position(passing) -> float:
     return float(m.group(1)) if m else np.nan
 
 
+_ID_COLUMNS = ("horse_id", "jockey_id", "trainer_id")
+_RAW_NUMERIC_COLUMNS = ("waku", "umaban", "kinryo", "distance")
+
+
+def _normalize_id_and_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Freshly-scraped shutuba data keeps every column as plain strings from
+    HTML parsing, while data that's round-tripped through a CSV gets numeric
+    dtypes auto-inferred by pandas (e.g. a purely-digit horse_id column
+    becomes int64). Left uncorrected, merging/joining or feeding those into
+    the model errors out ("merge on str and int64 columns") the moment a
+    prediction input skips the CSV round-trip -- so both training and
+    prediction paths normalize explicitly here rather than relying on
+    whatever dtype the caller's data happened to arrive in.
+    """
+    df = df.copy()
+    for col in _ID_COLUMNS:
+        if col in df.columns:
+            df[col] = df[col].astype(str)
+    for col in _RAW_NUMERIC_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
 def _relevance_from_rank(rank_numeric: pd.Series) -> pd.Series:
     """Graded relevance label for the lambdarank objective: 1st=3, 2nd=2,
     3rd=1, everything else (incl. DNF)=0. Keeps the model's focus on 複勝
@@ -110,7 +149,7 @@ def _relevance_from_rank(rank_numeric: pd.Series) -> pd.Series:
 
 def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     """Parse raw string columns (sex_age, horse_weight) and derive targets."""
-    df = df.copy()
+    df = _normalize_id_and_numeric_columns(df)
     df["date"] = pd.to_datetime(df["date"])
 
     sex_age = df["sex_age"].apply(_parse_sex_age)
@@ -127,6 +166,9 @@ def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["relevance"] = _relevance_from_rank(df["rank_numeric"])
     df["is_dirt"] = df["surface"] == "ダート"
     df["distance_band"] = _distance_band(df["distance"])
+
+    df["popularity_numeric"] = pd.to_numeric(df["popularity"], errors="coerce") if "popularity" in df.columns else np.nan
+    df["odds_numeric"] = pd.to_numeric(df["odds"], errors="coerce") if "odds" in df.columns else np.nan
 
     # This race's own running style -- NEVER used directly as a feature (it's
     # only known once the race has been run); only its leak-free historical
@@ -220,15 +262,17 @@ def build_training_frame(raw: pd.DataFrame) -> pd.DataFrame:
     df = add_basic_fields(raw)
     horse_stats = _expanding_entity_stats(df, "horse_id", "horse")
     jockey_stats = _expanding_entity_stats(df, "jockey_id", "jockey")
-    df = df.join(horse_stats).join(jockey_stats)
+    trainer_stats = _expanding_entity_stats(df, "trainer_id", "trainer")
+    df = df.join(horse_stats).join(jockey_stats).join(trainer_stats)
 
     # Dirt-only history: same expanding logic, restricted to the horse's/
-    # jockey's prior dirt starts (interleaved turf races are skipped, not
-    # just zeroed out) so these reflect dirt-specific form.
+    # jockey's/trainer's prior dirt starts (interleaved turf races are
+    # skipped, not just zeroed out) so these reflect dirt-specific form.
     dirt_df = df[df["is_dirt"]]
     horse_dirt_stats = _expanding_entity_stats(dirt_df, "horse_id", "horse_dirt")
     jockey_dirt_stats = _expanding_entity_stats(dirt_df, "jockey_id", "jockey_dirt")
-    df = df.join(horse_dirt_stats).join(jockey_dirt_stats)
+    trainer_dirt_stats = _expanding_entity_stats(dirt_df, "trainer_id", "trainer_dirt")
+    df = df.join(horse_dirt_stats).join(jockey_dirt_stats).join(trainer_dirt_stats)
 
     course_bias_stats = _expanding_entity_stats(df, COURSE_BIAS_GROUP_COLUMNS, "course_waku_bias")
     df = df.join(course_bias_stats)
@@ -275,8 +319,14 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
     `shutuba` must have: horse_id, jockey_id, sex_age, kinryo, waku, umaban,
     horse_weight, surface, distance, track_condition, place. `horse_weight`
     may be blank (pre-race weigh-in not yet published).
+
+    Both `shutuba` (often freshly scraped, still plain strings) and
+    `training_df` (often reloaded from a saved history CSV, which re-infers
+    numeric dtypes on read) are normalized here so the merges below always
+    compare like-for-like types regardless of where each one came from.
     """
-    df = shutuba.copy()
+    df = _normalize_id_and_numeric_columns(shutuba)
+    training_df = _normalize_id_and_numeric_columns(training_df)
 
     sex_age = df["sex_age"].apply(_parse_sex_age)
     df["sex"] = [s for s, _ in sex_age]
@@ -288,13 +338,15 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
     df["horse_weight_diff"] = [d for _, d in weight]
 
     df["distance_band"] = _distance_band(df["distance"])
+    df["popularity_numeric"] = pd.to_numeric(df["popularity"], errors="coerce") if "popularity" in df.columns else np.nan
+    df["odds_numeric"] = pd.to_numeric(df["odds"], errors="coerce") if "odds" in df.columns else np.nan
 
     horse_latest = _latest_entity_stats(training_df, "horse_id", "horse")
     jockey_latest = _latest_entity_stats(training_df, "jockey_id", "jockey")
 
-    # Dirt-specific "latest known" stats come from the horse's/jockey's most
-    # recent *dirt* start, not their most recent start overall -- otherwise a
-    # horse whose last race was on turf would show no dirt history at all.
+    # Dirt-specific "latest known" stats come from the horse's/jockey's/
+    # trainer's most recent *dirt* start, not their most recent start overall
+    # -- otherwise one whose last race was on turf would show no dirt history.
     dirt_history = training_df[training_df["is_dirt"]]
     horse_dirt_latest = _latest_entity_stats(dirt_history, "horse_id", "horse_dirt")
     jockey_dirt_latest = _latest_entity_stats(dirt_history, "jockey_id", "jockey_dirt")
@@ -312,6 +364,14 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
     df = df.merge(horse_style_latest, on="horse_id", how="left")
     df = df.merge(horse_dirt_style_latest, on="horse_id", how="left")
 
+    # trainer_id isn't always available on every shutuba source, so this is
+    # skipped gracefully (the final NaN-fill loop below covers the columns).
+    if "trainer_id" in df.columns:
+        trainer_latest = _latest_entity_stats(training_df, "trainer_id", "trainer")
+        trainer_dirt_latest = _latest_entity_stats(dirt_history, "trainer_id", "trainer_dirt")
+        df = df.merge(trainer_latest, on="trainer_id", how="left")
+        df = df.merge(trainer_dirt_latest, on="trainer_id", how="left")
+
     rename = {f"{col}_latest": col for col in (
         "horse_runs_before", "horse_win_rate_before", "horse_top3_rate_before", "horse_avg_rank_before",
         "jockey_runs_before", "jockey_win_rate_before", "jockey_top3_rate_before",
@@ -319,6 +379,8 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
         "jockey_dirt_runs_before", "jockey_dirt_win_rate_before", "jockey_dirt_top3_rate_before",
         "course_waku_bias_runs_before", "course_waku_bias_win_rate_before",
         "course_waku_bias_top3_rate_before", "course_waku_bias_avg_rank_before",
+        "trainer_runs_before", "trainer_win_rate_before", "trainer_top3_rate_before",
+        "trainer_dirt_runs_before", "trainer_dirt_win_rate_before", "trainer_dirt_top3_rate_before",
     )}
     df = df.rename(columns=rename)
     df["days_since_last_race"] = np.nan  # unknown for a not-yet-run race

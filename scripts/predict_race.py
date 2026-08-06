@@ -27,13 +27,14 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from keiba_ai.features import build_prediction_frame  # noqa: E402
+from keiba_ai.io import read_race_csv  # noqa: E402
 from keiba_ai.model import KeibaModel, softmax_scores  # noqa: E402
 from keiba_ai.scraper import PoliteScraper  # noqa: E402
 
 
 def load_shutuba(args: argparse.Namespace) -> pd.DataFrame:
     if args.shutuba_csv:
-        return pd.read_csv(args.shutuba_csv)
+        return read_race_csv(args.shutuba_csv)
     if args.shutuba_url:
         scraper = PoliteScraper()
         parsed = scraper.fetch_shutuba(args.shutuba_url)
@@ -57,7 +58,7 @@ def main() -> None:
     args = parser.parse_args()
 
     shutuba = load_shutuba(args)
-    history = pd.read_csv(args.history, parse_dates=["date"])
+    history = read_race_csv(args.history, parse_dates=["date"])
     model = KeibaModel.load(Path(args.model))
 
     feature_df = build_prediction_frame(shutuba, history)

@@ -165,6 +165,59 @@ def test_course_waku_bias_is_shared_across_different_horses():
     assert rC["course_waku_bias_win_rate_before"] == 0.5  # rA won, rB didn't
 
 
+def _trainer_raw() -> pd.DataFrame:
+    """Same trainer (tX) handling three different horses across three races --
+    tests that trainer stats aggregate by trainer_id, independent of horse."""
+    common = dict(place="東京", surface="ダート", distance=1600, track_condition="良", kinryo=55.0,
+                   waku=1, umaban=1, jockey_id="jX", jockey="JX", trainer_id="tX", trainer="TX")
+    rows = [
+        dict(common, race_id="r1", date="2023-04-01", horse_id="hA", horse_name="HA",
+             sex_age="牡4", horse_weight="480(0)", odds=3.0, popularity=1, rank=1, last_3f=36.0),
+        dict(common, race_id="r2", date="2023-04-08", horse_id="hB", horse_name="HB",
+             sex_age="牡5", horse_weight="470(0)", odds=4.0, popularity=1, rank=4, last_3f=36.2),
+        dict(common, race_id="r3", date="2023-04-15", horse_id="hC", horse_name="HC",
+             sex_age="牡6", horse_weight="460(0)", odds=5.0, popularity=1, rank=2, last_3f=36.4),
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_trainer_stats_aggregate_across_different_horses():
+    df = build_training_frame(_trainer_raw())
+
+    r1 = df[df["race_id"] == "r1"].iloc[0]
+    assert r1["trainer_runs_before"] == 0
+
+    # r2 is a different horse trained by the same tX -- should see r1 (a win).
+    r2 = df[df["race_id"] == "r2"].iloc[0]
+    assert r2["trainer_runs_before"] == 1
+    assert r2["trainer_win_rate_before"] == 1.0
+    assert r2["trainer_dirt_runs_before"] == 1  # all dirt races here
+
+    # r3: trainer now has 2 prior runs (1 win, 1 non-placing).
+    r3 = df[df["race_id"] == "r3"].iloc[0]
+    assert r3["trainer_runs_before"] == 2
+    assert r3["trainer_win_rate_before"] == 0.5
+
+
+def test_popularity_and_odds_numeric_parsing():
+    df = build_training_frame(_sample_raw())
+    row = df[df["race_id"] == "r1"].iloc[0]
+    assert row["popularity_numeric"] == 1.0
+    assert row["odds_numeric"] == 2.0
+
+    training_df = build_training_frame(_sample_raw())
+    shutuba = pd.DataFrame([
+        dict(horse_id="h1", jockey_id="j1", trainer_id="t1", umaban=1, waku=1, horse_name="H1",
+             jockey="J1", sex_age="牡4", kinryo=57.0, horse_weight="480(0)", surface="ダート",
+             distance=1800, track_condition="良", place="中山", popularity="**", odds="---.-"),
+    ])
+    pred = build_prediction_frame(shutuba, training_df)
+    # "**"/"---.-" are netkeiba's not-yet-finalized placeholders -- must parse
+    # to NaN (missing), not raise or silently become 0.
+    assert pd.isna(pred.iloc[0]["popularity_numeric"])
+    assert pd.isna(pred.iloc[0]["odds_numeric"])
+
+
 def test_prediction_frame_includes_most_recent_finished_race():
     """A horse's single past race (a win) must show up in the stats used to
     predict its *next* race -- not lag by one, which would show 0 runs/NaN

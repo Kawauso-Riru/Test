@@ -13,6 +13,9 @@ Streamlit UI までを一通り含みます。
 - 予測結果は娯楽・研究目的のものであり、**賭け金や馬券購入の助言ではありません。**
 - 同梱の合成データ (`synth_data.py`) は実在のレース・馬・騎手とは無関係の
   架空データです。ネットワークなしでパイプライン全体を試すために用意しています。
+- `data/jra_results.csv`(収集済みの実データ)はリポジトリに含まれています。
+  `models/` 以下(学習済みモデル・履歴)は `data/jra_results.csv` から数秒で
+  再現できるため含めていません -- 詳しくは「自動化」の節を参照してください。
 
 ## 構成
 
@@ -20,16 +23,22 @@ Streamlit UI までを一通り含みます。
 src/keiba_ai/
   parser.py      # HTMLパース(純粋関数、ネットワーク非依存)
   scraper.py      # robots.txt尊重・レート制限付きのネットワーク層
+  io.py           # CSV読み込み共通ヘルパー(ID列のゼロ落ち対策、下記参照)
   synth_data.py   # オフラインデモ/テスト用の合成レースデータ生成
   features.py     # 未来情報リークなしの特徴量エンジニアリング
-  model.py        # LightGBMモデルの学習・保存・推論
+  model.py        # LightGBMモデル(LambdaMARTランキング)の学習・保存・推論
   app.py          # Streamlit UI
 scripts/
   generate_demo_data.py       # 合成データをCSVに書き出す
   scrape_jra_dirt_results.py  # 中央競馬(JRA10場)の実レース結果を収集
+  update_dataset.py            # 既存データセットを差分更新して再学習(自動化用)
+  predict_raceday.py           # 指定日の中央競馬レースをまとめて予測
+  tune_hyperparams.py          # LightGBMハイパーパラメータのランダムサーチ
   train_model.py               # CSVからモデルを学習(--dirt-onlyでダート特化)
-  predict_race.py              # 出馬表(CSV/URL)から予測
-tests/                          # pytest (parser/features/modelのユニットテスト)
+  predict_race.py              # 出馬表(CSV/URL)から1レース分を予測
+tests/                          # pytest (parser/features/model/io/scraperのユニットテスト)
+.github/workflows/
+  weekly_update.yml             # 週次でupdate_dataset.pyを実行するGitHub Actions
 ```
 
 ## セットアップ
@@ -119,11 +128,11 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 ```
 
 学習データが少ない(数週間・数百レース程度)と、`horse_dirt_*` (馬のダート
-限定成績)特徴量が十分に貯まらず精度が伸び悩みます。1年分(ダート1,660
-レース)で学習した現在のランキングモデルでは、**held-out precision@3が
-0.447**(モデルの予測上位3頭のうち約45%が実際に3着以内)で、ランダムに
-3頭を選んだ場合の期待値(約0.2、フィールドサイズ約15頭として3/15)を
-2倍以上上回っています。
+限定成績)特徴量が十分に貯まらず精度が伸び悩みます。1年強(ダート1,674
+レース、2024年1月〜2025年1月)で学習した現在のランキングモデルでは、
+**held-out precision@3が0.449**(モデルの予測上位3頭のうち約45%が実際に
+3着以内)で、ランダムに3頭を選んだ場合の期待値(約0.2、フィールドサイズ
+約15頭として3/15)を2倍以上上回っています。
 
 ⚠️ 実サイトへのアクセスを行うため、事前に対象サイトの利用規約を確認してください。
 
@@ -165,9 +174,84 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
   1=常に後方)をリークなしで集計したものです。コースごとの脚質有利/不利は
   別途集計テーブルを作るのではなく、この連続値とコース系カテゴリ特徴量の
   交互作用としてLightGBMの木構造に学習させる設計です。
+- **調教師(trainer)特徴量**: `trainer_runs_before` / `trainer_win_rate_before`
+  / `trainer_top3_rate_before`(全体・ダート限定の両方)。jockey_*と全く同じ
+  パターンで、調教師IDごとにリークなし展開集計しています。
+- **人気・オッズ特徴量(既定では無効)**: `popularity_numeric` / `odds_numeric`
+  として実装済みですが、`train_model.py`は**既定でこれらを除外**します。
+  理由は実験で判明した実務上の落とし穴です: 最終オッズ・人気は市場(＝他の
+  馬券購入者全員の判断)を丸ごと特徴量に取り込むことになるため単体では
+  圧倒的に強い予測力を持ちますが(下表参照)、レース数日前の出馬表では
+  まだ確定しておらず("**"のようなプレースホルダ)、`predict_raceday.py`が
+  想定する「直前ではないタイミングでの予測」ではほぼ全レースで欠損します。
+  欠損すると学習時にこの特徴量に頼り切ったモデルの予測がほぼ一様になって
+  しまうため、既定では除外し、`--include-market-features`を明示的に渡した
+  ときだけ使う設計にしています。
+
+  | 特徴量セット | held-out precision@3 | 備考 |
+  |---|---|---|
+  | 人気・オッズ**あり** | 0.535 | 直前予測専用。オッズ確定前は使えない |
+  | 人気・オッズ**なし(既定)** | 0.449 | いつでも使える。実運用のデフォルト |
+
+- **ハイパーパラメータ**: `scripts/tune_hyperparams.py`
+  (`learning_rate`/`num_leaves`/`min_data_in_leaf`/`feature_fraction`/
+  `bagging_fraction`/`bagging_freq`/`lambda_l1`/`lambda_l2`の乱数サーチ)で
+  見つけた値を`keiba_ai.model.DEFAULT_PARAMS`の既定値にしています。
 - 1年分の実データで学習したところ、上記のダート特化・コースバイアス・
-  脚質の各特徴量群はいずれも特徴量重要度の上位〜中位に入り、実際に予測に
-  寄与していることを確認しました。
+  脚質・調教師の各特徴量群はいずれも特徴量重要度の上位〜中位に入り、実際に
+  予測に寄与していることを確認しました。
+- **⚠️ 修正した重大なバグ**: 騎手・調教師IDはゼロ埋め("01209"など)された
+  文字列ですが、`pd.read_csv`はこれを全桁数字の列とみなして`int64`型に
+  自動推論し、先頭のゼロを黙って落とします(`"01209"` → `1209`)。保存前の
+  スクレイピング直後のデータでは文字列のまま保持されるため、この型不一致で
+  騎手・調教師の統計がほぼ全件マッチせずNaNになっていました(CSV往復した
+  データ同士を比較していたテスト・デモでは症状が出ず、`predict_raceday.py`
+  でライブ出馬表と結合して初めて発覚)。`keiba_ai.io.read_race_csv`で
+  ID列を明示的に文字列型として読み込むよう修正し、全CSV読み込み箇所を
+  これに統一しました(`tests/test_io.py`で回帰テスト済み)。
+
+## 自動化(実運用に向けて)
+
+```bash
+# 差分更新: 前回の最終日の翌日〜昨日までを自動スクレイピングし、
+# データセットに追記して再学習まで一括で行う
+python scripts/update_dataset.py \
+    --data data/jra_results.csv \
+    --model-out models/model_dirt.joblib --history-out models/history.csv \
+    --contact your-email@example.com
+
+# 開催日一括予測: 指定日の中央競馬(ダート)レースを自動検出し、
+# 出馬表を取得してレースごとに予測をまとめて表示
+python scripts/predict_raceday.py --date 20250111 --dirt-only \
+    --model models/model_dirt.joblib --history models/history.csv \
+    --contact your-email@example.com --out reports/20250111.csv
+```
+
+- `update_dataset.py` は `--data` の最終日を見て次の日から自動的に日付範囲を
+  計算するので、日付を手計算する必要はありません。データが存在しない状態
+  (初回)では `--start-date` を渡してください。
+- `predict_raceday.py` は `race.netkeiba.com` のライブ開催スケジュール
+  (レース結果データベースではなく、まだ結果の出ていない開催カード)から
+  その日のレースを自動検出します。レース開催の数日前〜当日に、開催者が
+  カードを公開してから使えます(それより先の日付は未公開のため空になります)。
+
+### GitHub Actions での自動更新
+
+`.github/workflows/weekly_update.yml` が毎週月曜18:00 UTC(火曜3:00 JST、
+週末のJRA開催が一通り終わった後)に `update_dataset.py` を実行します。
+
+- 使うには、リポジトリの Settings → Secrets and variables → Actions →
+  Variables で **`SCRAPER_CONTACT_EMAIL`**(スクレイパーのUser-Agentに
+  埋め込む連絡先)を設定してください。
+- 更新された `data/jra_results.csv` は自動的にコミット・pushされます。
+- `models/model_dirt.joblib` / `models/history.csv` はリポジトリにコミット
+  せず(`data/jra_results.csv` から数秒で再現できるため)、ワークフローの
+  実行結果(Artifacts)からダウンロードする形にしています。
+- 手動実行(`workflow_dispatch`)にも対応しているので、Actionsタブから
+  いつでも即座にトリガーできます。
+
+⚠️ 定期的な自動スクレイピングになるため、有効化する前に対象サイトの利用規約を
+再度ご確認ください。
 
 ## Streamlit UIのモード
 
@@ -186,8 +270,9 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 pytest tests/ -v
 ```
 
-`tests/fixtures/` の静的HTMLを使って `parser.py` を検証し、`features.py` は
-手作りの小さなデータセットでリークが起きていないこと(ダート限定履歴・
-コースバイアス・脚質特徴量それぞれについて)を、`model.py` は合成データで
-学習したモデルがランダムな3頭選択(precision@3 ≈ 0.3)を明確に上回ることを
-確認します。
+`tests/fixtures/` の静的HTMLを使って `parser.py`/`scraper.py`(開催日一覧の
+場ごとグルーピング含む)を検証し、`features.py` は手作りの小さなデータ
+セットでリークが起きていないこと(ダート限定履歴・コースバイアス・脚質・
+調教師の各特徴量について)を、`model.py` は合成データで学習したモデルが
+ランダムな3頭選択(precision@3 ≈ 0.3)を明確に上回ることを確認します。
+`test_io.py` は、ゼロ埋めID列がCSV往復で壊れないことを回帰テストします。

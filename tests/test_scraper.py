@@ -1,4 +1,22 @@
-from keiba_ai.scraper import is_jra_race_id
+from pathlib import Path
+
+from keiba_ai.scraper import PoliteScraper, is_jra_race_id
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_list_upcoming_races_for_date_groups_by_venue(monkeypatch):
+    html = (FIXTURES / "race_list_sub_sample.html").read_text(encoding="utf-8")
+    scraper = PoliteScraper()
+    monkeypatch.setattr(scraper, "fetch", lambda url: html)
+
+    races = scraper.list_upcoming_races_for_date("20250105")
+
+    assert races == [
+        {"race_id": "202506010101", "place": "中山"},
+        {"race_id": "202506010102", "place": "中山"},
+        {"race_id": "202507010101", "place": "中京"},
+    ]
 
 
 def test_is_jra_race_id_accepts_the_10_jra_courses():
