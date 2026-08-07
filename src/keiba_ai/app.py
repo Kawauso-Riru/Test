@@ -70,7 +70,7 @@ def show_result(feature_df: pd.DataFrame) -> None:
     result = feature_df.sort_values("score", ascending=False)
     st.dataframe(
         result[["umaban", "horse_name", "jockey", "kinryo", "相対スコア(%)"]],
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
     )
 
@@ -79,13 +79,31 @@ def format_metrics(metrics: dict) -> str:
     return f"NDCG@3: {metrics['valid_ndcg@3']:.3f}, 予測上位3頭の的中率(precision@3): {metrics['valid_precision@3']:.3f}"
 
 
+def race_label_lookup(df: pd.DataFrame, race_ids) -> dict:
+    """race_id -> "2026/8/7 中山 11R" style label, for a readable selectbox.
+
+    Race number is read off the last 2 digits of race_id (netkeiba's
+    YYYYPPKKDDRR convention) since it isn't stored as its own column.
+    """
+    preview = df[df["race_id"].isin(race_ids)].drop_duplicates("race_id").set_index("race_id")
+    labels = {}
+    for race_id in race_ids:
+        info = preview.loc[race_id]
+        race_no = int(str(race_id)[-2:])
+        labels[race_id] = f"{info['date'].year}/{info['date'].month}/{info['date'].day} {info['place']} {race_no}R"
+    return labels
+
+
 if mode == "デモデータで試す":
     with st.spinner("デモモデルを学習中..."):
         model, training_df = get_or_train_demo_model()
     st.success(f"デモモデル学習完了 ({format_metrics(model.metrics)})")
 
     race_ids = sorted(training_df["race_id"].unique())[-20:]
-    chosen_race = st.selectbox("レースを選択(合成データ・直近20件)", race_ids)
+    race_labels = race_label_lookup(training_df, race_ids)
+    chosen_race = st.selectbox(
+        "レースを選択(合成データ・直近20件)", race_ids, format_func=lambda rid: race_labels[rid]
+    )
     shutuba_cols = [
         "horse_id", "jockey_id", "trainer_id", "umaban", "waku", "horse_name", "jockey",
         "sex_age", "kinryo", "horse_weight", "surface", "distance", "track_condition", "place",
@@ -122,7 +140,11 @@ elif mode == "実データモデルを使う(学習済み)":
     )
 
     race_ids = sorted(dirt_history["race_id"].unique())[-50:]
-    chosen_race = st.selectbox("ダートレースを選択(履歴データの直近50件)", race_ids, index=len(race_ids) - 1)
+    race_labels = race_label_lookup(dirt_history, race_ids)
+    chosen_race = st.selectbox(
+        "ダートレースを選択(履歴データの直近50件)", race_ids,
+        index=len(race_ids) - 1, format_func=lambda rid: race_labels[rid],
+    )
     race_rows = dirt_history[dirt_history["race_id"] == chosen_race]
     info = race_rows.iloc[0]
     st.caption(f"{info['date']:%Y-%m-%d} {info['place']} {info['surface']}{info['distance']:.0f}m {info['track_condition']}")
@@ -142,7 +164,7 @@ elif mode == "実データモデルを使う(学習済み)":
 
     with st.expander("実際の着順と比較"):
         actual = race_rows[["umaban", "horse_name", "rank"]].sort_values("rank")
-        st.dataframe(actual, use_container_width=True, hide_index=True)
+        st.dataframe(actual, width='stretch', hide_index=True)
 
 elif mode == "CSVをアップロード":
     st.write("学習用の過去成績CSVと、予測対象の出馬表CSVをそれぞれアップロードしてください。列名は keiba_ai.parser の出力に合わせてください。")
