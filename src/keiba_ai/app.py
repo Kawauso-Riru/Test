@@ -139,10 +139,25 @@ elif mode == "実データモデルを使う(学習済み)":
         f"{history_df['date'].min():%Y-%m-%d}〜{history_df['date'].max():%Y-%m-%d})"
     )
 
-    race_ids = sorted(dirt_history["race_id"].unique())[-50:]
-    race_labels = race_label_lookup(dirt_history, race_ids)
+    places = sorted(dirt_history["place"].dropna().unique())
+    selected_place = st.selectbox("競馬場を選択", ["すべて"] + places)
+    place_filtered = dirt_history if selected_place == "すべて" else dirt_history[dirt_history["place"] == selected_place]
+
+    # Sort by the actual date, not the race_id string: race_id encodes
+    # YYYYPPKKDDRR, so string-sorting mixes different courses' place codes
+    # (PP) in ahead of the day (DD) -- e.g. every 2026 小倉 (place code "10",
+    # the largest of the 10 JRA codes) race would sort after *any* other
+    # 2026 course's race, regardless of which one actually happened later.
+    race_order = place_filtered[["race_id", "date"]].drop_duplicates("race_id").sort_values("date")
+    race_ids = race_order["race_id"].tolist()[-50:]
+
+    if not race_ids:
+        st.warning("選択した競馬場のダートレースが見つかりませんでした。")
+        st.stop()
+
+    race_labels = race_label_lookup(place_filtered, race_ids)
     chosen_race = st.selectbox(
-        "ダートレースを選択(履歴データの直近50件)", race_ids,
+        f"ダートレースを選択(直近{len(race_ids)}件)", race_ids,
         index=len(race_ids) - 1, format_func=lambda rid: race_labels[rid],
     )
     race_rows = dirt_history[dirt_history["race_id"] == chosen_race]
