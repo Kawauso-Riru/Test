@@ -5,6 +5,7 @@ Run with:
 """
 from __future__ import annotations
 
+import datetime
 import sys
 from pathlib import Path
 
@@ -16,7 +17,7 @@ import streamlit as st
 from keiba_ai.features import build_prediction_frame, build_training_frame
 from keiba_ai.io import read_race_csv
 from keiba_ai.model import KeibaModel, softmax_scores, train_model
-from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig
+from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig, is_jra_race_id
 from keiba_ai.synth_data import generate_synthetic_results
 
 st.set_page_config(page_title="競馬予想AI", layout="wide")
@@ -49,7 +50,13 @@ def load_real_dirt_model():
 st.sidebar.header("設定")
 mode = st.sidebar.radio(
     "使い方を選択",
-    ["デモデータで試す", "実データモデルを使う(学習済み)", "CSVをアップロード", "URLから取得(スクレイピング)"],
+    [
+        "デモデータで試す",
+        "実データモデルを使う(学習済み)",
+        "今日・明日のレースを予想",
+        "CSVをアップロード",
+        "URLから取得(スクレイピング)",
+    ],
 )
 st.sidebar.markdown(
     "---\n"
@@ -180,6 +187,120 @@ elif mode == "実データモデルを使う(学習済み)":
     with st.expander("実際の着順と比較"):
         actual = race_rows[["umaban", "horse_name", "rank"]].sort_values("rank")
         st.dataframe(actual, width='stretch', hide_index=True)
+
+elif mode == "今日・明日のレースを予想":
+    st.write(
+        "学習済みモデルで、これから開催されるレースを予想します。"
+        "race.netkeiba.com の開催カードを毎回取得するため、レース結果ではなく"
+        "**まだ結果の出ていない、これから走るレース**が対象です。"
+        "開催の数日前〜当日にカードが発表されてから使えます(発表前の日付は空振りになります)。"
+    )
+    if not REAL_MODEL_PATH.exists() or not REAL_HISTORY_PATH.exists():
+        st.warning(
+            "学習済みモデルが見つかりません(`models/model_dirt.joblib` / "
+            "`models/history.csv`)。先にコマンドラインで収集・学習してください:\n\n"
+            "```bash\n"
+            "python scripts/train_model.py --data data/jra_results.csv --dirt-only \\\n"
+            "    --model-out models/model_dirt.joblib --history-out models/history.csv\n"
+            "```"
+        )
+        st.stop()
+
+    model, history_df = load_real_dirt_model()
+    st.success(f"学習済み実データモデルを読み込みました ({format_metrics(model.metrics)})")
+
+    today = datetime.date.today()
+    if "predict_date" not in st.session_state:
+        st.session_state["predict_date"] = today
+
+    col1, col2, col3 = st.columns([1, 1, 3])
+    with col1:
+        if st.button("今日"):
+            st.session_state["predict_date"] = today
+    with col2:
+        if st.button("明日"):
+            st.session_state["predict_date"] = today + datetime.timedelta(days=1)
+    with col3:
+        target_date = st.date_input("予想したい開催日", key="predict_date")
+
+    dirt_only = st.checkbox("ダートレースのみ予想する(このモデルはダート特化です)", value=True)
+    contact = st.text_input(
+        "連絡先メールアドレス",
+        help="スクレイパーのUser-Agentに埋め込まれ、アクセス元を示すために使われます(必須)。",
+    )
+    min_interval = st.slider("最小リクエスト間隔(秒)", 1.0, 5.0, 1.5)
+
+    if st.button("この日のレースを予想する", type="primary"):
+        if not contact:
+            st.error("連絡先メールアドレスを入力してください。")
+            st.stop()
+
+        scraper = PoliteScraper(
+            ScraperConfig(
+                user_agent=f"keiba-ai-research-bot/0.1 (+contact: {contact})",
+                min_interval_sec=min_interval,
+            )
+        )
+        date_str = target_date.strftime("%Y%m%d")
+        with st.spinner("開催レース一覧を取得中..."):
+            try:
+                races = scraper.list_upcoming_races_for_date(date_str)
+            except RobotsDisallowedError as exc:
+                st.error(f"robots.txt によりアクセスが禁止されています: {exc}")
+                st.stop()
+
+        jra_races = [r for r in races if is_jra_race_id(r["race_id"])]
+        if not jra_races:
+            st.warning(
+                f"{target_date:%Y年%m月%d日}の中央競馬レースが見つかりませんでした。"
+                "開催がない日か、まだ出馬表が発表されていない可能性があります"
+                "(通常、開催の数日前から発表されます)。"
+            )
+            st.stop()
+
+        progress = st.progress(0.0)
+        status = st.empty()
+        race_results = []
+        for i, race in enumerate(jra_races):
+            race_id, place = race["race_id"], race["place"]
+            status.text(f"取得中... {place} {int(race_id[-2:])}R ({i + 1}/{len(jra_races)})")
+            try:
+                parsed = scraper.fetch_shutuba(scraper.shutuba_url(race_id))
+            except RobotsDisallowedError:
+                progress.progress((i + 1) / len(jra_races))
+                continue
+
+            if parsed["entries"]:
+                meta = parsed["meta"]
+                surface = meta.get("surface", "")
+                if not (dirt_only and surface != "ダート"):
+                    shutuba_df = pd.DataFrame(parsed["entries"])
+                    shutuba_df["surface"] = surface
+                    shutuba_df["distance"] = meta.get("distance")
+                    shutuba_df["track_condition"] = meta.get("track_condition", "")
+                    shutuba_df["place"] = meta.get("place") or place
+
+                    feature_df = add_predictions(model, build_prediction_frame(shutuba_df, history_df))
+                    race_no = int(race_id[-2:])
+                    label = f"{place} {race_no}R  {meta.get('race_name', '')} ({surface}{meta.get('distance', '?')}m)"
+                    race_results.append((race_no, label, feature_df))
+            progress.progress((i + 1) / len(jra_races))
+
+        status.empty()
+        progress.empty()
+
+        if not race_results:
+            st.warning(
+                "予想できるレースがありませんでした。出馬表がまだ確定していないか、"
+                "ダート指定で該当レースがなかった可能性があります。"
+            )
+            st.stop()
+
+        race_results.sort(key=lambda r: r[0])
+        st.success(f"{target_date:%Y年%m月%d日} のレースを{len(race_results)}件予想しました。")
+        for _, label, feature_df in race_results:
+            with st.expander(label):
+                show_result(feature_df)
 
 elif mode == "CSVをアップロード":
     st.write("学習用の過去成績CSVと、予測対象の出馬表CSVをそれぞれアップロードしてください。列名は keiba_ai.parser の出力に合わせてください。")
