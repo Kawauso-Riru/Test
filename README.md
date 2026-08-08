@@ -130,7 +130,7 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 学習データが少ない(数週間・数百レース程度)と、`horse_dirt_*` (馬のダート
 限定成績)特徴量が十分に貯まらず精度が伸び悩みます。2年半強(ダート4,199
 レース、2024年1月〜2026年8月)で学習した現在のランキングモデルでは、
-**held-out precision@3が0.468**(モデルの予測上位3頭のうち約47%が実際に
+**held-out precision@3が0.471**(モデルの予測上位3頭のうち約47%が実際に
 3着以内)で、ランダムに3頭を選んだ場合の期待値(約0.2、フィールドサイズ
 約15頭として3/15)を2倍以上上回っています。
 
@@ -197,6 +197,13 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
   など、実際にモデルの予測に活用されていることを確認済みです。
   `track_condition`は出馬表発表直後は未確定(空欄)のことが多く、その場合は
   `popularity_numeric`/`odds_numeric`と同様に欠損(NaN)として扱われます。
+- **追切評価(training_grade)**: netkeibaが公開している調教(追切)の
+  A〜E評価をカテゴリ特徴量として使用します。生の調教タイムはnetkeiba
+  プレミアム会員限定(1レースにつき3頭のみ無料プレビュー)で、しかも
+  「注目馬だけ載る」という偏りがあるため使わず、全頭分が無料公開されて
+  いる評価レターだけを`scripts/scrape_oikiri.py`で取得しています
+  (`data/oikiri.csv`、race_id+horse_idキーで結合)。特徴量重要度でも
+  上位5位以内に入るなど、実際に強く予測に寄与していることを確認済みです。
 - **人気・オッズ特徴量(既定では無効)**: `popularity_numeric` / `odds_numeric`
   として実装済みですが、`train_model.py`は**既定でこれらを除外**します。
   理由は実験で判明した実務上の落とし穴です: 最終オッズ・人気は市場(＝他の
@@ -210,8 +217,8 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 
   | 特徴量セット | held-out precision@3 | 備考 |
   |---|---|---|
-  | 人気・オッズ**あり** | 0.553 | 直前予測専用。オッズ確定前は使えない |
-  | 人気・オッズ**なし(既定)** | 0.468 | いつでも使える。実運用のデフォルト |
+  | 人気・オッズ**あり** | 0.558 | 直前予測専用。オッズ確定前は使えない |
+  | 人気・オッズ**なし(既定)** | 0.471 | いつでも使える。実運用のデフォルト |
 
 - **ハイパーパラメータ**: `scripts/tune_hyperparams.py`
   (`learning_rate`/`num_leaves`/`min_data_in_leaf`/`feature_fraction`/
