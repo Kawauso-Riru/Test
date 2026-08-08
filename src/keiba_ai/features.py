@@ -20,6 +20,9 @@ NUMERIC_FEATURE_COLUMNS = [
     "horse_weight_diff",
     "age",
     "distance",
+    # Number of runners in this race -- known in advance from the finalized
+    # entry list. A larger field mechanically makes a top-3 finish harder.
+    "field_size",
     "horse_runs_before",
     "horse_win_rate_before",
     "horse_top3_rate_before",
@@ -57,6 +60,15 @@ NUMERIC_FEATURE_COLUMNS = [
     # without needing a hand-built course-x-style aggregate.
     "horse_early_position_ratio_before",
     "horse_dirt_early_position_ratio_before",
+    # This horse's historical closing-sprint speed (上がり3F, the final
+    # ~600m split), averaged the same leak-free way as running style above.
+    # Correlates with finishing rank less strongly than the horse's plain
+    # average rank (it captures a different trait -- late-race kick, not
+    # overall placing) but isn't fully redundant with it either. Like
+    # horse_early_position_ratio_before, only ever the horse's *own* past
+    # average -- this race's own last_3f is only known after it finishes.
+    "horse_avg_last_3f_before",
+    "horse_dirt_avg_last_3f_before",
     # This horse's own dirt-race history conditioned on a specific race
     # attribute matching today's race -- distinct from course_waku_bias_*
     # (which is a field-wide average, not specific to this horse) and from
@@ -200,13 +212,21 @@ def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     if "training_grade" not in df.columns:
         df["training_grade"] = np.nan
 
+    # Known in advance (the entry list is finalized before post time).
+    df["field_size"] = df.groupby("race_id")["umaban"].transform("count")
+
+    # This race's own last_3f (closing sprint split) -- like `passing` below,
+    # only known once the race has been run, so only its leak-free historical
+    # average per horse (computed in build_training_frame) is ever used as an
+    # actual feature.
+    df["last_3f_numeric"] = pd.to_numeric(df["last_3f"], errors="coerce") if "last_3f" in df.columns else np.nan
+
     # This race's own running style -- NEVER used directly as a feature (it's
     # only known once the race has been run); only its leak-free historical
     # average per horse (computed below) enters NUMERIC_FEATURE_COLUMNS.
     if "passing" in df.columns:
         early_position = df["passing"].apply(_parse_early_position)
-        field_size = df.groupby("race_id")["umaban"].transform("count")
-        df["early_position_ratio"] = early_position / field_size
+        df["early_position_ratio"] = early_position / df["field_size"]
     else:
         df["early_position_ratio"] = np.nan
     return df
@@ -316,7 +336,11 @@ def build_training_frame(raw: pd.DataFrame) -> pd.DataFrame:
 
     horse_style = _expanding_mean(df, "horse_id", "early_position_ratio", "horse_early_position_ratio")
     horse_dirt_style = _expanding_mean(dirt_df, "horse_id", "early_position_ratio", "horse_dirt_early_position_ratio")
-    return df.join(horse_style).join(horse_dirt_style)
+    df = df.join(horse_style).join(horse_dirt_style)
+
+    horse_last3f = _expanding_mean(df, "horse_id", "last_3f_numeric", "horse_avg_last_3f")
+    horse_dirt_last3f = _expanding_mean(dirt_df, "horse_id", "last_3f_numeric", "horse_dirt_avg_last_3f")
+    return df.join(horse_last3f).join(horse_dirt_last3f)
 
 
 def _latest_entity_stats(training_df: pd.DataFrame, entity_col, prefix: str) -> pd.DataFrame:
@@ -378,6 +402,11 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
     df["popularity_numeric"] = pd.to_numeric(df["popularity"], errors="coerce") if "popularity" in df.columns else np.nan
     df["odds_numeric"] = pd.to_numeric(df["odds"], errors="coerce") if "odds" in df.columns else np.nan
 
+    # `shutuba` is always one race's full entry list (see docstring), so the
+    # field size is simply its row count -- no groupby needed, unlike the
+    # multi-race raw data build_training_frame works from.
+    df["field_size"] = len(df)
+
     horse_latest = _latest_entity_stats(training_df, "horse_id", "horse")
     jockey_latest = _latest_entity_stats(training_df, "jockey_id", "jockey")
 
@@ -401,6 +430,8 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
 
     horse_style_latest = _latest_mean(training_df, "horse_id", "horse_early_position_ratio")
     horse_dirt_style_latest = _latest_mean(dirt_history, "horse_id", "horse_dirt_early_position_ratio")
+    horse_last3f_latest = _latest_mean(training_df, "horse_id", "horse_avg_last_3f")
+    horse_dirt_last3f_latest = _latest_mean(dirt_history, "horse_id", "horse_dirt_avg_last_3f")
 
     df = df.merge(horse_latest, on="horse_id", how="left")
     df = df.merge(jockey_latest, on="jockey_id", how="left")
@@ -412,6 +443,8 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
     df = df.merge(horse_dirt_distance_latest, on=["horse_id", "distance"], how="left")
     df = df.merge(horse_style_latest, on="horse_id", how="left")
     df = df.merge(horse_dirt_style_latest, on="horse_id", how="left")
+    df = df.merge(horse_last3f_latest, on="horse_id", how="left")
+    df = df.merge(horse_dirt_last3f_latest, on="horse_id", how="left")
 
     # trainer_id isn't always available on every shutuba source, so this is
     # skipped gracefully (the final NaN-fill loop below covers the columns).

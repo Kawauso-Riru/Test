@@ -44,6 +44,9 @@ def sample_params(rng: random.Random) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", required=True)
+    parser.add_argument("--oikiri", default="data/oikiri.csv",
+                         help="optional training-grade CSV from scripts/scrape_oikiri.py; "
+                              "merged in as the training_grade feature if the file exists")
     parser.add_argument("--dirt-only", action="store_true")
     parser.add_argument("--include-market-features", action="store_true",
                          help="keep popularity/odds as features (see train_model.py's caveat)")
@@ -54,6 +57,10 @@ def main() -> None:
     args = parser.parse_args()
 
     raw = read_race_csv(args.data)
+    oikiri_path = Path(args.oikiri)
+    if oikiri_path.exists():
+        oikiri = read_race_csv(oikiri_path)[["race_id", "horse_id", "training_grade"]]
+        raw = raw.merge(oikiri, on=["race_id", "horse_id"], how="left")
     training_df = build_training_frame(raw)
     fit_df = training_df[training_df["is_dirt"]] if args.dirt_only else training_df
     print(f"tuning on {len(fit_df)} entries ({fit_df['race_id'].nunique()} races)")
