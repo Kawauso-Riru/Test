@@ -1,8 +1,32 @@
 from pathlib import Path
 
-from keiba_ai.parser import parse_race_result_html, parse_shutuba_html
+from keiba_ai.parser import parse_oikiri_html, parse_race_result_html, parse_shutuba_html
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_parse_oikiri_html():
+    html = (FIXTURES / "oikiri_sample.html").read_text(encoding="utf-8")
+    entries = parse_oikiri_html(html)
+
+    assert len(entries) == 3
+
+    first = entries[0]
+    assert first["horse_id"] == "2024103642"
+    assert first["horse_name"] == "マイネルヴェスペル"
+    assert first["training_last_furlong_sec"] == 12.7  # last (RapTime) split, not the cumulative time
+    assert first["training_grade"] == "C"
+
+    second = entries[1]
+    assert second["training_last_furlong_sec"] == 11.9
+    assert second["training_grade"] == "B"
+
+    # A row with no logged workout (e.g. a late scratch) shouldn't raise --
+    # it just omits the fields it couldn't find.
+    third = entries[2]
+    assert third["horse_name"] == "スクラッチウマ"
+    assert "training_last_furlong_sec" not in third
+    assert "training_grade" not in third
 
 
 def test_parse_race_result_html():

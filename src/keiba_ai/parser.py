@@ -166,6 +166,56 @@ def parse_race_result_html(html: str) -> dict:
     return {"meta": parse_race_meta(soup), "entries": entries}
 
 
+def parse_oikiri_html(html: str) -> list:
+    """Parse a netkeiba training-time (追切) page
+    (race.netkeiba.com/race/oikiri.html?race_id=...&type=2) into per-horse
+    workout records for that race.
+
+    Returns a list of dicts with whatever of these could be found per row
+    (a late scratch or an as-yet-unlogged workout just omits fields rather
+    than raising): horse_id, horse_name, training_last_furlong_sec (the
+    workout's final ~1F/200m split, in seconds -- lower is faster; this is
+    the single number experienced fans use to compare workouts across
+    different course lengths/types) and training_grade (netkeiba's own
+    A/B/C/D/E-style evaluation letter, already accounting for pace/course/
+    finish that a lone furlong time can't capture on its own).
+
+    Deliberately targets this page's actual (colspan-heavy) DOM by CSS
+    class rather than reusing the generic header-index table scanner above
+    -- the header row's cell count doesn't match the data rows' cell count
+    here (a "評価" header spans two data columns), which would silently
+    misalign every column after it.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table", class_="OikiriTable")
+    if table is None:
+        return []
+
+    entries = []
+    for row in table.find_all("tr")[1:]:
+        horse_link = row.select_one("td.Horse_Info div.Horse_Name a[href]")
+        if horse_link is None:
+            continue
+        record: dict = {"horse_name": _clean_text(horse_link)}
+        id_match = re.search(r"/horse/(\w+)", horse_link["href"])
+        if id_match:
+            record["horse_id"] = id_match.group(1)
+
+        time_cell = row.find("td", class_="TrainingTimeData")
+        if time_cell is not None:
+            splits = re.findall(r"\(([\d.]+)\)", time_cell.get_text())
+            if splits:
+                record["training_last_furlong_sec"] = float(splits[-1])
+
+        grade_cell = row.find("td", class_=re.compile(r"^Rank_"))
+        grade_text = _clean_text(grade_cell)
+        if grade_text:
+            record["training_grade"] = grade_text
+
+        entries.append(record)
+    return entries
+
+
 def parse_shutuba_html(html: str) -> dict:
     """Parse a netkeiba-style *shutuba* (pre-race entry list) page into {meta, entries}."""
     soup = BeautifulSoup(html, "lxml")

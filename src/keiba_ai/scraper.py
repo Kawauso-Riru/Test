@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from .parser import parse_race_result_html, parse_shutuba_html
+from .parser import parse_oikiri_html, parse_race_result_html, parse_shutuba_html
 
 DEFAULT_USER_AGENT = "keiba-ai-research-bot/0.1 (+contact: set-your-email-here)"
 
@@ -124,6 +124,21 @@ class PoliteScraper:
 
     def fetch_shutuba(self, url: str) -> dict:
         return parse_shutuba_html(self.fetch(url))
+
+    def fetch_oikiri(self, url: str) -> list:
+        return parse_oikiri_html(self.fetch(url))
+
+    @staticmethod
+    def oikiri_url(race_id: str) -> str:
+        # &type=3 ("評価のみ") is the free, full-field evaluation-letter view.
+        # &type=2 ("最終追切のみ") additionally has raw lap times, but only
+        # for a ~3-horse free preview per race -- the rest is paywalled
+        # behind a netkeiba premium membership ("続きを見る" links to
+        # regist.netkeiba.com/?pid=premium), so it isn't used here: a
+        # feature that's only ever populated for a curated preview subset
+        # would be both unreliably sparse and systematically biased toward
+        # whichever horses netkeiba chose to feature.
+        return f"https://race.netkeiba.com/race/oikiri.html?race_id={race_id}&type=3"
 
     def list_race_ids_for_date(self, date: str) -> list:
         """date: 'YYYYMMDD'. Race ids on that day's db.netkeiba.com list page --
