@@ -130,7 +130,7 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 学習データが少ない(数週間・数百レース程度)と、`horse_dirt_*` (馬のダート
 限定成績)特徴量が十分に貯まらず精度が伸び悩みます。2年半強(ダート4,199
 レース、2024年1月〜2026年8月)で学習した現在のランキングモデルでは、
-**held-out precision@3が0.471**(モデルの予測上位3頭のうち約47%が実際に
+**held-out precision@3が0.480**(モデルの予測上位3頭のうち約48%が実際に
 3着以内)で、ランダムに3頭を選んだ場合の期待値(約0.2、フィールドサイズ
 約15頭として3/15)を2倍以上上回っています。
 
@@ -204,6 +204,14 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
   いる評価レターだけを`scripts/scrape_oikiri.py`で取得しています
   (`data/oikiri.csv`、race_id+horse_idキーで結合)。特徴量重要度でも
   上位5位以内に入るなど、実際に強く予測に寄与していることを確認済みです。
+- **出走頭数(field_size)・過去の上がり3F平均**: 「事前に分かるデータで
+  着順と相関のあるものは他にないか」を独立にSpearman相関で検証した結果
+  追加した2つの特徴量です。`field_size`(出走頭数、頭数が多いほど3着以内
+  が難しくなる)は相関が弱く(相関係数0.08、特徴量重要度でも下位)実際の
+  寄与はごくわずかでしたが、`horse_avg_last_3f_before` /
+  `horse_dirt_avg_last_3f_before`(その馬の過去の上がり3F=終い足の
+  リークなし展開平均)は相関係数0.15と、平均着順ほど強くはないものの
+  別の側面(瞬発力)を捉えており、特徴量重要度でも上位に入っています。
 - **人気・オッズ特徴量(既定では無効)**: `popularity_numeric` / `odds_numeric`
   として実装済みですが、`train_model.py`は**既定でこれらを除外**します。
   理由は実験で判明した実務上の落とし穴です: 最終オッズ・人気は市場(＝他の
@@ -217,8 +225,8 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 
   | 特徴量セット | held-out precision@3 | 備考 |
   |---|---|---|
-  | 人気・オッズ**あり** | 0.558 | 直前予測専用。オッズ確定前は使えない |
-  | 人気・オッズ**なし(既定)** | 0.471 | いつでも使える。実運用のデフォルト |
+  | 人気・オッズ**あり** | 0.552 | 直前予測専用。オッズ確定前は使えない |
+  | 人気・オッズ**なし(既定)** | 0.480 | いつでも使える。実運用のデフォルト |
 
 - **ハイパーパラメータ**: `scripts/tune_hyperparams.py`
   (`learning_rate`/`num_leaves`/`min_data_in_leaf`/`feature_fraction`/
