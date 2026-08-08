@@ -130,7 +130,7 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 学習データが少ない(数週間・数百レース程度)と、`horse_dirt_*` (馬のダート
 限定成績)特徴量が十分に貯まらず精度が伸び悩みます。2年半強(ダート4,199
 レース、2024年1月〜2026年8月)で学習した現在のランキングモデルでは、
-**held-out precision@3が0.463**(モデルの予測上位3頭のうち約46%が実際に
+**held-out precision@3が0.468**(モデルの予測上位3頭のうち約47%が実際に
 3着以内)で、ランダムに3頭を選んだ場合の期待値(約0.2、フィールドサイズ
 約15頭として3/15)を2倍以上上回っています。
 
@@ -177,6 +177,16 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 - **調教師(trainer)特徴量**: `trainer_runs_before` / `trainer_win_rate_before`
   / `trainer_top3_rate_before`(全体・ダート限定の両方)。jockey_*と全く同じ
   パターンで、調教師IDごとにリークなし展開集計しています。
+- **馬×条件別のダート実績**: `horse_dirt_track_condition_*` /
+  `horse_dirt_place_*` / `horse_dirt_distance_*`。`course_waku_bias_*`が
+  「その条件でのフィールド全体の傾向」であるのに対し、こちらは**その馬自身
+  が今回と同じ馬場状態・開催場所・距離のダート戦でどう走ってきたか**を
+  リークなし展開集計したものです(いずれもダート戦に限定。`horse_dirt_*`
+  同様、芝適性がそのまま転用できるとは限らないため)。学習時と同じ手法で
+  `horse_dirt_distance_avg_rank_before`が特徴量重要度で上位10位以内に入る
+  など、実際にモデルの予測に活用されていることを確認済みです。
+  `track_condition`は出馬表発表直後は未確定(空欄)のことが多く、その場合は
+  `popularity_numeric`/`odds_numeric`と同様に欠損(NaN)として扱われます。
 - **人気・オッズ特徴量(既定では無効)**: `popularity_numeric` / `odds_numeric`
   として実装済みですが、`train_model.py`は**既定でこれらを除外**します。
   理由は実験で判明した実務上の落とし穴です: 最終オッズ・人気は市場(＝他の
@@ -190,8 +200,8 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 
   | 特徴量セット | held-out precision@3 | 備考 |
   |---|---|---|
-  | 人気・オッズ**あり** | 0.552 | 直前予測専用。オッズ確定前は使えない |
-  | 人気・オッズ**なし(既定)** | 0.463 | いつでも使える。実運用のデフォルト |
+  | 人気・オッズ**あり** | 0.553 | 直前予測専用。オッズ確定前は使えない |
+  | 人気・オッズ**なし(既定)** | 0.468 | いつでも使える。実運用のデフォルト |
 
 - **ハイパーパラメータ**: `scripts/tune_hyperparams.py`
   (`learning_rate`/`num_leaves`/`min_data_in_leaf`/`feature_fraction`/

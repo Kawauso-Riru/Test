@@ -57,6 +57,24 @@ NUMERIC_FEATURE_COLUMNS = [
     # without needing a hand-built course-x-style aggregate.
     "horse_early_position_ratio_before",
     "horse_dirt_early_position_ratio_before",
+    # This horse's own dirt-race history conditioned on a specific race
+    # attribute matching today's race -- distinct from course_waku_bias_*
+    # (which is a field-wide average, not specific to this horse) and from
+    # horse_dirt_* above (which averages over every distance/course/going).
+    # Computed on dirt starts only, like horse_dirt_* itself, since aptitude
+    # for a given going/course/distance doesn't transfer 1:1 from turf.
+    "horse_dirt_track_condition_runs_before",
+    "horse_dirt_track_condition_win_rate_before",
+    "horse_dirt_track_condition_top3_rate_before",
+    "horse_dirt_track_condition_avg_rank_before",
+    "horse_dirt_place_runs_before",
+    "horse_dirt_place_win_rate_before",
+    "horse_dirt_place_top3_rate_before",
+    "horse_dirt_place_avg_rank_before",
+    "horse_dirt_distance_runs_before",
+    "horse_dirt_distance_win_rate_before",
+    "horse_dirt_distance_top3_rate_before",
+    "horse_dirt_distance_avg_rank_before",
     # Trainer history, mirroring jockey_*/jockey_dirt_* exactly.
     "trainer_runs_before",
     "trainer_win_rate_before",
@@ -277,6 +295,13 @@ def build_training_frame(raw: pd.DataFrame) -> pd.DataFrame:
     course_bias_stats = _expanding_entity_stats(df, COURSE_BIAS_GROUP_COLUMNS, "course_waku_bias")
     df = df.join(course_bias_stats)
 
+    # This horse's own dirt-form conditioned on track condition / venue /
+    # distance matching today's race (see NUMERIC_FEATURE_COLUMNS comment).
+    horse_dirt_tc_stats = _expanding_entity_stats(dirt_df, ["horse_id", "track_condition"], "horse_dirt_track_condition")
+    horse_dirt_place_stats = _expanding_entity_stats(dirt_df, ["horse_id", "place"], "horse_dirt_place")
+    horse_dirt_distance_stats = _expanding_entity_stats(dirt_df, ["horse_id", "distance"], "horse_dirt_distance")
+    df = df.join(horse_dirt_tc_stats).join(horse_dirt_place_stats).join(horse_dirt_distance_stats)
+
     horse_style = _expanding_mean(df, "horse_id", "early_position_ratio", "horse_early_position_ratio")
     horse_dirt_style = _expanding_mean(dirt_df, "horse_id", "early_position_ratio", "horse_dirt_early_position_ratio")
     return df.join(horse_style).join(horse_dirt_style)
@@ -353,6 +378,15 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
 
     course_bias_latest = _latest_entity_stats(training_df, COURSE_BIAS_GROUP_COLUMNS, "course_waku_bias")
 
+    # This horse's most recent dirt run under a matching track condition /
+    # at this venue / at this exact distance -- see build_training_frame.
+    # track_condition is frequently unknown this far ahead of an upcoming
+    # race (blank until race-day morning), same caveat as popularity/odds:
+    # that merge key just won't match and the feature comes back NaN.
+    horse_dirt_tc_latest = _latest_entity_stats(dirt_history, ["horse_id", "track_condition"], "horse_dirt_track_condition")
+    horse_dirt_place_latest = _latest_entity_stats(dirt_history, ["horse_id", "place"], "horse_dirt_place")
+    horse_dirt_distance_latest = _latest_entity_stats(dirt_history, ["horse_id", "distance"], "horse_dirt_distance")
+
     horse_style_latest = _latest_mean(training_df, "horse_id", "horse_early_position_ratio")
     horse_dirt_style_latest = _latest_mean(dirt_history, "horse_id", "horse_dirt_early_position_ratio")
 
@@ -361,6 +395,9 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
     df = df.merge(horse_dirt_latest, on="horse_id", how="left")
     df = df.merge(jockey_dirt_latest, on="jockey_id", how="left")
     df = df.merge(course_bias_latest, on=COURSE_BIAS_GROUP_COLUMNS, how="left")
+    df = df.merge(horse_dirt_tc_latest, on=["horse_id", "track_condition"], how="left")
+    df = df.merge(horse_dirt_place_latest, on=["horse_id", "place"], how="left")
+    df = df.merge(horse_dirt_distance_latest, on=["horse_id", "distance"], how="left")
     df = df.merge(horse_style_latest, on="horse_id", how="left")
     df = df.merge(horse_dirt_style_latest, on="horse_id", how="left")
 
@@ -379,6 +416,12 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
         "jockey_dirt_runs_before", "jockey_dirt_win_rate_before", "jockey_dirt_top3_rate_before",
         "course_waku_bias_runs_before", "course_waku_bias_win_rate_before",
         "course_waku_bias_top3_rate_before", "course_waku_bias_avg_rank_before",
+        "horse_dirt_track_condition_runs_before", "horse_dirt_track_condition_win_rate_before",
+        "horse_dirt_track_condition_top3_rate_before", "horse_dirt_track_condition_avg_rank_before",
+        "horse_dirt_place_runs_before", "horse_dirt_place_win_rate_before",
+        "horse_dirt_place_top3_rate_before", "horse_dirt_place_avg_rank_before",
+        "horse_dirt_distance_runs_before", "horse_dirt_distance_win_rate_before",
+        "horse_dirt_distance_top3_rate_before", "horse_dirt_distance_avg_rank_before",
         "trainer_runs_before", "trainer_win_rate_before", "trainer_top3_rate_before",
         "trainer_dirt_runs_before", "trainer_dirt_win_rate_before", "trainer_dirt_top3_rate_before",
     )}
