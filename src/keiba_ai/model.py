@@ -23,6 +23,7 @@ import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from sklearn.isotonic import IsotonicRegression
 from sklearn.model_selection import GroupShuffleSplit
 
 from .features import ALL_FEATURE_COLUMNS, CATEGORICAL_FEATURE_COLUMNS
@@ -73,6 +74,7 @@ class KeibaModel:
     encoder: CategoryEncoder
     metrics: dict
     feature_columns: list = None  # None (old pickles) means ALL_FEATURE_COLUMNS
+    calibrator: IsotonicRegression = None  # None (old pickles) means no calibration available
 
     def _prepare(self, df: pd.DataFrame) -> pd.DataFrame:
         X = df[self.feature_columns or ALL_FEATURE_COLUMNS].copy()
@@ -81,9 +83,26 @@ class KeibaModel:
     def predict(self, df: pd.DataFrame) -> np.ndarray:
         """Relative ranking score per row -- only meaningful compared against
         other rows *from the same race*. Not a probability; use
-        `softmax_scores` to turn a single race's scores into a display %."""
+        `softmax_scores` to turn a single race's scores into a display %, or
+        `predict_top3_probability` for a calibrated 複勝(top-3) probability."""
         X = self._prepare(df)
         return self.booster.predict(X, num_iteration=self.booster.best_iteration)
+
+    def predict_top3_probability(self, df: pd.DataFrame) -> np.ndarray:
+        """Calibrated P(finishes top 3), independent per horse -- unlike
+        `softmax_scores`, these do NOT sum to 100% across a race (three
+        horses finish top 3, so they should sum to roughly 3.0 over a full
+        field). Calibrated via isotonic regression fit on held-out
+        validation predictions vs actual outcomes at training time (see
+        `train_model`), so it reflects "of horses the model scored this way
+        historically, what fraction actually finished top 3" -- not a
+        first-principles probability. Falls back to raw scores rescaled into
+        [0, 1] for older pickles saved before calibration existed."""
+        scores = self.predict(df)
+        if self.calibrator is None:
+            lo, hi = scores.min(), scores.max()
+            return np.zeros_like(scores) if hi <= lo else (scores - lo) / (hi - lo)
+        return self.calibrator.predict(scores)
 
     def save(self, path: Path) -> None:
         path = Path(path)
@@ -170,6 +189,14 @@ def train_model(
     valid_scores = booster.predict(X_valid, num_iteration=booster.best_iteration)
     precision_at_3 = _precision_at_k(valid_df.assign(_score=valid_scores), score_col="_score", k=3)
 
+    # Calibrate raw scores -> P(top 3) on the held-out validation split (never
+    # the training split, which would just recover the model's own training
+    # fit rather than a realistic held-out hit rate). Isotonic regression
+    # only assumes the mapping is monotonic non-decreasing, which the
+    # ranking objective guarantees by construction.
+    calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    calibrator.fit(valid_scores, valid_df["target_top3"])
+
     metrics = {
         "valid_ndcg@3": float(booster.best_score["valid_0"]["ndcg@3"]),
         "valid_precision@3": float(precision_at_3),
@@ -179,4 +206,7 @@ def train_model(
         "n_train_races": int(len(train_group)),
         "n_valid_races": int(len(valid_group)),
     }
-    return KeibaModel(booster=booster, encoder=encoder, metrics=metrics, feature_columns=feature_columns)
+    return KeibaModel(
+        booster=booster, encoder=encoder, metrics=metrics,
+        feature_columns=feature_columns, calibrator=calibrator,
+    )

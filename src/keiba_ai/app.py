@@ -70,15 +70,22 @@ def add_predictions(model, feature_df: pd.DataFrame) -> pd.DataFrame:
     scores = model.predict(feature_df)
     feature_df["score"] = scores
     feature_df["相対スコア(%)"] = (softmax_scores(scores) * 100).round(1)
+    feature_df["3着以内率(推定,%)"] = (model.predict_top3_probability(feature_df) * 100).round(1)
     return feature_df
 
 
 def show_result(feature_df: pd.DataFrame) -> None:
     result = feature_df.sort_values("score", ascending=False)
     st.dataframe(
-        result[["umaban", "horse_name", "jockey", "kinryo", "相対スコア(%)"]],
+        result[["umaban", "horse_name", "jockey", "kinryo", "3着以内率(推定,%)", "相対スコア(%)"]],
         width='stretch',
         hide_index=True,
+    )
+    st.caption(
+        "**3着以内率(推定,%)**: 過去データをもとに較正した、その馬が単独で3着以内に入る確率の推定値"
+        "(馬ごとに独立。レース内で合計100%にはならない)。"
+        "**相対スコア(%)**: そのレース内での相対的な強さを、フィールド内で合計100%になるよう表示したもの"
+        "(的中確率そのものではない)。"
     )
 
 

@@ -41,3 +41,33 @@ def test_predict_on_upcoming_race_shape():
     probs = softmax_scores(preds)
     assert np.isclose(probs.sum(), 1.0)
     assert ((probs >= 0) & (probs <= 1)).all()
+
+
+def test_calibrated_top3_probability_is_bounded_and_monotonic():
+    raw = generate_synthetic_results(n_horses=80, n_jockeys=15, n_races=150, field_size=10, seed=1)
+    training_df = build_training_frame(raw)
+    model = train_model(training_df, num_boost_round=100)
+    assert model.calibrator is not None
+
+    last_race_id = training_df.sort_values("date")["race_id"].iloc[-1]
+    shutuba_cols = [
+        "horse_id", "jockey_id", "umaban", "waku", "horse_name", "jockey",
+        "sex_age", "kinryo", "horse_weight", "surface", "distance", "track_condition", "place",
+    ]
+    shutuba = training_df[training_df["race_id"] == last_race_id][shutuba_cols]
+    history = training_df[training_df["race_id"] != last_race_id]
+    feature_df = build_prediction_frame(shutuba, history)
+
+    scores = model.predict(feature_df)
+    probs = model.predict_top3_probability(feature_df)
+
+    # Unlike softmax_scores, these are independent per horse -- no
+    # sum-to-1 constraint -- but each must still be a valid probability.
+    assert ((probs >= 0) & (probs <= 1)).all()
+    # Isotonic calibration is monotonic non-decreasing: a strictly higher raw
+    # score can never map to a strictly lower calibrated probability (ties in
+    # probs are allowed -- isotonic regression can plateau several distinct
+    # scores onto the same value -- so this checks pairwise order, not an
+    # exact argsort match).
+    order = np.argsort(scores)
+    assert (np.diff(probs[order]) >= -1e-9).all()
