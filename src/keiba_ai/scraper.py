@@ -74,10 +74,15 @@ class PoliteScraper:
             try:
                 rp.read()
             except Exception:
-                # If robots.txt is unreachable, fail closed on the side of caution
-                # by leaving the parser empty (can_fetch defaults to True for an
-                # empty ruleset) -- callers should still keep volume low.
-                pass
+                # robots.txt itself couldn't be fetched (network hiccup, TLS
+                # interception, timeout, ...) -- NOT the same as robots.txt
+                # explicitly disallowing us. RobotFileParser.can_fetch()
+                # actually returns False by default when read() never
+                # completed (last_checked stays 0), which would silently
+                # block every request forever. Force allow_all so a transient
+                # robots.txt fetch failure doesn't masquerade as a real
+                # disallow; callers should still keep volume low.
+                rp.allow_all = True
             self._robots_cache[origin] = rp
         return self._robots_cache[origin]
 
