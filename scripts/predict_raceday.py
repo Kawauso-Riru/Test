@@ -82,19 +82,30 @@ def main() -> None:
         shutuba["track_condition"] = meta.get("track_condition", "")
         shutuba["place"] = meta.get("place") or place
 
+        try:
+            oikiri_entries = scraper.fetch_oikiri(scraper.oikiri_url(race_id))
+        except RobotsDisallowedError:
+            oikiri_entries = []
+        if oikiri_entries:
+            oikiri_df = pd.DataFrame(oikiri_entries)[["horse_id", "training_grade"]]
+            shutuba = shutuba.merge(oikiri_df, on="horse_id", how="left")
+
         feature_df = build_prediction_frame(shutuba, history)
         feature_df["score"] = model.predict(feature_df)
         feature_df["relative_share(%)"] = (softmax_scores(feature_df["score"]) * 100).round(1)
+        feature_df["top3_probability(%)"] = (model.predict_top3_probability(feature_df) * 100).round(1)
         feature_df["race_id"] = race_id
         feature_df["race_name"] = meta.get("race_name", "")
 
         result = feature_df.sort_values("score", ascending=False)
         race_label = f"{race_id} {place} {surface}{meta.get('distance', '?')}m {meta.get('race_name', '')}"
         print(f"\n=== {race_label} ===")
-        print(result[["umaban", "horse_name", "jockey", "relative_share(%)"]].head(args.top_n).to_string(index=False))
+        print(result[["umaban", "horse_name", "jockey", "top3_probability(%)", "relative_share(%)"]]
+              .head(args.top_n).to_string(index=False))
 
         all_rows.append(result[[
-            "race_id", "race_name", "umaban", "horse_name", "jockey", "relative_share(%)", "score",
+            "race_id", "race_name", "umaban", "horse_name", "jockey",
+            "top3_probability(%)", "relative_share(%)", "score",
         ]])
 
     if not all_rows:

@@ -287,6 +287,14 @@ elif mode == "今日・明日のレースを予想":
                     shutuba_df["track_condition"] = meta.get("track_condition", "")
                     shutuba_df["place"] = meta.get("place") or place
 
+                    try:
+                        oikiri_entries = scraper.fetch_oikiri(scraper.oikiri_url(race_id))
+                    except RobotsDisallowedError:
+                        oikiri_entries = []
+                    if oikiri_entries:
+                        oikiri_df = pd.DataFrame(oikiri_entries)[["horse_id", "training_grade"]]
+                        shutuba_df = shutuba_df.merge(oikiri_df, on="horse_id", how="left")
+
                     feature_df = add_predictions(model, build_prediction_frame(shutuba_df, history_df))
                     race_no = int(race_id[-2:])
                     label = f"{place} {race_no}R  {meta.get('race_name', '')} ({surface}{meta.get('distance', '?')}m)"

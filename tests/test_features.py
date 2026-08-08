@@ -218,6 +218,36 @@ def test_popularity_and_odds_numeric_parsing():
     assert pd.isna(pred.iloc[0]["odds_numeric"])
 
 
+def test_training_grade_is_missing_by_default_but_passed_through_if_present():
+    # Raw data without any oikiri merge -- training_grade must still exist
+    # as a column (NaN), or selecting ALL_FEATURE_COLUMNS downstream would
+    # KeyError instead of just treating it as missing.
+    df = build_training_frame(_sample_raw())
+    assert "training_grade" in df.columns
+    assert df["training_grade"].isna().all()
+
+    # A caller that *did* merge scripts/scrape_oikiri.py's output onto the
+    # raw rows before calling build_training_frame should see it survive.
+    raw_with_grade = _sample_raw()
+    raw_with_grade["training_grade"] = ["B", "C", "A", "D"]
+    graded = build_training_frame(raw_with_grade)
+    assert graded["training_grade"].tolist() == ["B", "C", "A", "D"]
+
+    # Same for an upcoming race's shutuba: not present -> NaN, not a KeyError.
+    training_df = build_training_frame(_sample_raw())
+    shutuba = pd.DataFrame([
+        dict(horse_id="h1", jockey_id="j1", trainer_id="t1", umaban=1, waku=1, horse_name="H1",
+             jockey="J1", sex_age="牡4", kinryo=57.0, horse_weight="480(0)", surface="ダート",
+             distance=1800, track_condition="良", place="中山"),
+    ])
+    pred = build_prediction_frame(shutuba, training_df)
+    assert pd.isna(pred.iloc[0]["training_grade"])
+
+    shutuba["training_grade"] = "A"
+    pred_graded = build_prediction_frame(shutuba, training_df)
+    assert pred_graded.iloc[0]["training_grade"] == "A"
+
+
 def test_prediction_frame_includes_most_recent_finished_race():
     """A horse's single past race (a win) must show up in the stats used to
     predict its *next* race -- not lag by one, which would show 0 runs/NaN

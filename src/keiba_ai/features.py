@@ -92,7 +92,17 @@ NUMERIC_FEATURE_COLUMNS = [
     "odds_numeric",
 ]
 
-CATEGORICAL_FEATURE_COLUMNS = ["sex", "surface", "track_condition", "place", "distance_band"]
+CATEGORICAL_FEATURE_COLUMNS = [
+    "sex", "surface", "track_condition", "place", "distance_band",
+    # netkeiba's own free A/B/C/D/E training (追切) evaluation for this
+    # specific upcoming race -- not a historical stat, so (unlike horse_*)
+    # it's used as-is per row rather than expanded/aggregated. Raw workout
+    # times aren't included: netkeiba only publishes those for a curated
+    # 3-horse preview per race behind a premium paywall (see
+    # PoliteScraper.oikiri_url), so that data would be both sparse and
+    # biased toward whichever horses netkeiba chose to feature.
+    "training_grade",
+]
 
 ALL_FEATURE_COLUMNS = NUMERIC_FEATURE_COLUMNS + CATEGORICAL_FEATURE_COLUMNS
 
@@ -187,6 +197,8 @@ def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
 
     df["popularity_numeric"] = pd.to_numeric(df["popularity"], errors="coerce") if "popularity" in df.columns else np.nan
     df["odds_numeric"] = pd.to_numeric(df["odds"], errors="coerce") if "odds" in df.columns else np.nan
+    if "training_grade" not in df.columns:
+        df["training_grade"] = np.nan
 
     # This race's own running style -- NEVER used directly as a feature (it's
     # only known once the race has been run); only its leak-free historical
