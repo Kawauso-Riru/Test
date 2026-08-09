@@ -113,6 +113,7 @@ def main() -> None:
             entry["surface"] = meta.get("surface")
             entry["distance"] = meta.get("distance")
             entry["track_condition"] = meta.get("track_condition")
+            entry["race_name"] = meta.get("race_name")
             rows.append(entry)
         if i % 20 == 0:
             print(f"  {i}/{len(race_ids)} races fetched")

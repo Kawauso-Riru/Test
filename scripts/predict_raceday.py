@@ -81,6 +81,7 @@ def main() -> None:
         shutuba["distance"] = meta.get("distance")
         shutuba["track_condition"] = meta.get("track_condition", "")
         shutuba["place"] = meta.get("place") or place
+        shutuba["race_name"] = meta.get("race_name", "")
 
         try:
             oikiri_entries = scraper.fetch_oikiri(scraper.oikiri_url(race_id))

@@ -114,6 +114,11 @@ CATEGORICAL_FEATURE_COLUMNS = [
     # PoliteScraper.oikiri_url), so that data would be both sparse and
     # biased toward whichever horses netkeiba chose to feature.
     "training_grade",
+    # Race class (未勝利/1勝クラス/.../オープン/G1-G3/...), parsed from the
+    # race's own name/title -- a genuinely pre-race-known, structural signal
+    # (the field's competitive level) that was fetched all along (parse_race_meta
+    # extracts race_name) but never actually kept as a feature until now.
+    "race_class",
 ]
 
 ALL_FEATURE_COLUMNS = NUMERIC_FEATURE_COLUMNS + CATEGORICAL_FEATURE_COLUMNS
@@ -144,6 +149,39 @@ def _distance_band(distance: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(distance, errors="coerce")
     band = pd.cut(numeric, bins=_DISTANCE_BAND_BINS, labels=_DISTANCE_BAND_LABELS)
     return band.astype(object).where(numeric.notna(), "不明")
+
+
+def _race_class(race_name) -> str:
+    """Race class/grade from the race's own title. Two netkeiba naming
+    styles show up: a plain descriptive name for condition races ("3歳以上
+    1勝クラス", "2歳未勝利", "4歳以上オープン") or a proper noun for named
+    stakes with the class abbreviated in trailing parens ("○○ステークス
+    (GIII)", "△△特別(2勝)", "□□ステークス(L)"). Matching on substrings
+    handles both without needing two separate code paths -- "1勝" appears
+    in either "1勝クラス" or "(1勝)" alike. Graded stakes are matched with
+    an anchored regex (not a plain substring) since "GI" is itself a
+    substring of "GII"/"GIII"."""
+    name = str(race_name)
+    if "障害" in name:
+        return "障害"
+    if "新馬" in name:
+        return "新馬"
+    if "未勝利" in name:
+        return "未勝利"
+    graded = re.search(r"\(G(I{1,3})\)", name)
+    if graded:
+        return {"I": "G1", "II": "G2", "III": "G3"}[graded.group(1)]
+    if "3勝" in name:
+        return "3勝クラス"
+    if "2勝" in name:
+        return "2勝クラス"
+    if "1勝" in name:
+        return "1勝クラス"
+    if "(L)" in name:
+        return "リステッド"
+    if "オープン" in name or "(OP)" in name:
+        return "オープン"
+    return "不明"
 
 
 def _parse_early_position(passing) -> float:
@@ -211,6 +249,10 @@ def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["odds_numeric"] = pd.to_numeric(df["odds"], errors="coerce") if "odds" in df.columns else np.nan
     if "training_grade" not in df.columns:
         df["training_grade"] = np.nan
+
+    # Known in advance -- race conditions (含む格) are published with the
+    # entry list, well before the race.
+    df["race_class"] = df["race_name"].apply(_race_class) if "race_name" in df.columns else "不明"
 
     # Known in advance (the entry list is finalized before post time).
     df["field_size"] = df.groupby("race_id")["umaban"].transform("count")
@@ -401,6 +443,7 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
     df["distance_band"] = _distance_band(df["distance"])
     df["popularity_numeric"] = pd.to_numeric(df["popularity"], errors="coerce") if "popularity" in df.columns else np.nan
     df["odds_numeric"] = pd.to_numeric(df["odds"], errors="coerce") if "odds" in df.columns else np.nan
+    df["race_class"] = df["race_name"].apply(_race_class) if "race_name" in df.columns else "不明"
 
     # `shutuba` is always one race's full entry list (see docstring), so the
     # field size is simply its row count -- no groupby needed, unlike the

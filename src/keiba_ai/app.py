@@ -286,6 +286,7 @@ elif mode == "今日・明日のレースを予想":
                     shutuba_df["distance"] = meta.get("distance")
                     shutuba_df["track_condition"] = meta.get("track_condition", "")
                     shutuba_df["place"] = meta.get("place") or place
+                    shutuba_df["race_name"] = meta.get("race_name", "")
 
                     try:
                         oikiri_entries = scraper.fetch_oikiri(scraper.oikiri_url(race_id))
@@ -395,6 +396,7 @@ else:
         shutuba_df["distance"] = smeta.get("distance")
         shutuba_df["track_condition"] = smeta.get("track_condition", "")
         shutuba_df["place"] = smeta.get("place") or shutuba_place
+        shutuba_df["race_name"] = smeta.get("race_name", "")
 
         feature_df = add_predictions(model, build_prediction_frame(shutuba_df, training_df))
         show_result(feature_df)

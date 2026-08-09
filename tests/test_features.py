@@ -248,6 +248,35 @@ def test_training_grade_is_missing_by_default_but_passed_through_if_present():
     assert pred_graded.iloc[0]["training_grade"] == "A"
 
 
+def _race_class_of(race_name: str) -> str:
+    """Single-row raw frame carrying only the given race_name -- avoids the
+    ambiguity of _sample_raw()'s repeated race_ids when indexing results."""
+    row = dict(_sample_raw().iloc[0])
+    row["race_name"] = race_name
+    return build_training_frame(pd.DataFrame([row]))["race_class"].iloc[0]
+
+
+def test_race_class_parses_both_netkeiba_naming_styles():
+    assert _race_class_of("2歳新馬") == "新馬"                       # plain condition-race name
+    assert _race_class_of("3歳以上1勝クラス") == "1勝クラス"
+    assert _race_class_of("4歳以上2勝クラス") == "2勝クラス"
+    assert _race_class_of("3歳以上3勝クラス") == "3勝クラス"
+    assert _race_class_of("2歳未勝利") == "未勝利"
+    assert _race_class_of("4歳以上オープン") == "オープン"
+    assert _race_class_of("障害4歳以上未勝利") == "障害"
+    assert _race_class_of("第40回フェアリーステークス(GIII)") == "G3"  # named stakes, class in trailing parens
+    assert _race_class_of("○○賞(GII)") == "G2"  # must not misdetect via substring collision with GIII
+    assert _race_class_of("○○賞(GI)") == "G1"
+    assert _race_class_of("△△特別(2勝)") == "2勝クラス"
+    assert _race_class_of("□□ステークス(L)") == "リステッド"
+    assert _race_class_of("万葉ステークス(OP)") == "オープン"
+
+    # Missing race_name column entirely (e.g. an older cached history CSV) ->
+    # falls back to "不明" rather than KeyError.
+    no_name = build_training_frame(_sample_raw())
+    assert (no_name["race_class"] == "不明").all()
+
+
 def test_prediction_frame_includes_most_recent_finished_race():
     """A horse's single past race (a win) must show up in the stats used to
     predict its *next* race -- not lag by one, which would show 0 runs/NaN
