@@ -205,7 +205,13 @@ elif mode == "実データモデルを使う(学習済み)":
         actual = race_rows[["umaban", "horse_name", "rank"]].merge(
             predicted_rank[["umaban", "predicted_rank"]], on="umaban", how="left",
         )
-        actual = actual.sort_values("rank").rename(columns={"rank": "着順", "predicted_rank": "予測順位"})
+        # "rank" is text (a DNF/scratch shows up as e.g. "中止" rather than a
+        # number), so sorting the column directly sorts lexicographically
+        # ("1","10","11",...,"2","3",...) instead of by finishing position.
+        # Sort by a numeric-coerced key instead; non-finishers (NaN) sort last.
+        actual = actual.assign(_rank_numeric=pd.to_numeric(actual["rank"], errors="coerce"))
+        actual = actual.sort_values("_rank_numeric").drop(columns="_rank_numeric")
+        actual = actual.rename(columns={"rank": "着順", "predicted_rank": "予測順位"})
         st.dataframe(
             actual[["着順", "umaban", "horse_name", "予測順位"]],
             width='stretch', hide_index=True,
