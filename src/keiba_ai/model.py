@@ -39,17 +39,24 @@ RELEVANCE_COLUMN = "relevance"
 # top-3 order exactly right" (that would be eval_at=[3]). train_model derives
 # its NDCG/recall metric keys from this value, so changing it here is enough
 # to retarget training; a single-element list is assumed throughout.
+#
+# A 5-seed robustness check (retraining this vs. the runner-up vs. the old
+# ndcg@3-tuned params, each across 5 different train/valid splits) found
+# these differ by less than 1 standard deviation on every metric -- the
+# 25-trial random search's "winner" on a single split was mostly noise, not
+# a genuine optimum. This is simply the best-on-average of that check, not a
+# result to read too much confidence into; see README for the numbers.
 DEFAULT_PARAMS = {
     "objective": "lambdarank",
     "metric": "ndcg",
     "eval_at": [6],
-    "learning_rate": 0.02,
-    "num_leaves": 31,
+    "learning_rate": 0.1,
+    "num_leaves": 15,
     "min_data_in_leaf": 30,
-    "feature_fraction": 0.8,
+    "feature_fraction": 1.0,
     "bagging_fraction": 0.9,
-    "bagging_freq": 1,
-    "lambda_l1": 0.0,
+    "bagging_freq": 5,
+    "lambda_l1": 1.0,
     "lambda_l2": 0.0,
     "verbose": -1,
 }
