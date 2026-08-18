@@ -200,8 +200,16 @@ elif mode == "実データモデルを使う(学習済み)":
     show_result(feature_df)
 
     with st.expander("実際の着順と比較"):
-        actual = race_rows[["umaban", "horse_name", "rank"]].sort_values("rank")
-        st.dataframe(actual, width='stretch', hide_index=True)
+        predicted_rank = feature_df[["umaban", "score"]].copy()
+        predicted_rank["predicted_rank"] = predicted_rank["score"].rank(ascending=False, method="min").astype(int)
+        actual = race_rows[["umaban", "horse_name", "rank"]].merge(
+            predicted_rank[["umaban", "predicted_rank"]], on="umaban", how="left",
+        )
+        actual = actual.sort_values("rank").rename(columns={"rank": "着順", "predicted_rank": "予測順位"})
+        st.dataframe(
+            actual[["着順", "umaban", "horse_name", "予測順位"]],
+            width='stretch', hide_index=True,
+        )
 
 elif mode == "今日・明日のレースを予想":
     st.write(
