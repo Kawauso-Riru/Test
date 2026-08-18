@@ -14,7 +14,17 @@ def test_train_model_beats_random_guessing():
     # top-3 guess out of a 10-horse field would score precision@3 ~= 0.3;
     # a trained ranker should clearly beat that.
     assert model.metrics["valid_precision@3"] > 0.4
-    assert model.metrics["valid_ndcg@3"] > 0.5
+
+    # The NDCG/recall/"all 3 placers captured" metric names depend on
+    # DEFAULT_PARAMS' eval_at (see keiba_ai.model), so look them up by
+    # prefix rather than hardcoding e.g. "valid_ndcg@3" -- this test
+    # shouldn't need editing every time eval_at changes.
+    ndcg_key = next(k for k in model.metrics if k.startswith("valid_ndcg@"))
+    recall_key = next(k for k in model.metrics if k.startswith("valid_recall@"))
+    assert model.metrics[ndcg_key] > 0.5
+    # A random guess would recall roughly k/field_size of the actual top-3
+    # per race; a trained ranker on real signal should clearly beat that.
+    assert model.metrics[recall_key] > 0.5
 
 
 def test_predict_on_upcoming_race_shape():

@@ -4,8 +4,12 @@
 Trains `--n-trials` random parameter combinations against the SAME
 train/valid race split (train_model's `seed` is held fixed) so the
 comparison across trials is apples-to-apples, then prints them ranked by
-held-out NDCG@3. Copy the winning params into keiba_ai.model.DEFAULT_PARAMS
-by hand once you're happy with a result -- this script doesn't write code.
+held-out "all 3 actual placers captured in the top-k" rate -- the metric
+name is derived from whatever keiba_ai.model.DEFAULT_PARAMS' eval_at is set
+to (e.g. eval_at=[6] -> valid_all_top3_in_top6), so this script doesn't need
+updating when that changes. Copy the winning params into
+keiba_ai.model.DEFAULT_PARAMS by hand once you're happy with a result --
+this script doesn't write code.
 
 Usage:
     python scripts/tune_hyperparams.py --data data/jra_results.csv --dirt-only --n-trials 30
@@ -75,18 +79,23 @@ def main() -> None:
         params = sample_params(rng)
         model = train_model(fit_df, num_boost_round=args.num_boost_round, params=params,
                              seed=args.split_seed, feature_columns=feature_columns)
-        results.append((model.metrics["valid_ndcg@3"], model.metrics["valid_precision@3"], params))
-        print(f"trial {trial:>2}/{args.n_trials}  ndcg@3={model.metrics['valid_ndcg@3']:.4f}  "
-              f"precision@3={model.metrics['valid_precision@3']:.4f}  {params}")
+        m = model.metrics
+        ndcg_key = next(k for k in m if k.startswith("valid_ndcg@"))
+        recall_key = next(k for k in m if k.startswith("valid_recall@"))
+        all3_key = next(k for k in m if k.startswith("valid_all_top3_in_top"))
+        results.append((m[all3_key], m[ndcg_key], m[recall_key], m["valid_precision@3"], params))
+        print(f"trial {trial:>2}/{args.n_trials}  {all3_key}={m[all3_key]:.4f}  {ndcg_key}={m[ndcg_key]:.4f}  "
+              f"{recall_key}={m[recall_key]:.4f}  precision@3={m['valid_precision@3']:.4f}  {params}")
 
     results.sort(key=lambda r: r[0], reverse=True)
-    print("\n=== top 5 by NDCG@3 ===")
-    for ndcg, precision, params in results[:5]:
-        print(f"ndcg@3={ndcg:.4f}  precision@3={precision:.4f}")
+    print(f"\n=== top 5 by {all3_key} (all 3 placers captured in the top-k) ===")
+    for all3, ndcg, recall, precision, params in results[:5]:
+        print(f"{all3_key}={all3:.4f}  {ndcg_key}={ndcg:.4f}  {recall_key}={recall:.4f}  precision@3={precision:.4f}")
         print(f"  {params}")
 
-    best_ndcg, best_precision, best_params = results[0]
-    print(f"\nbest params (ndcg@3={best_ndcg:.4f}, precision@3={best_precision:.4f}):")
+    best_all3, best_ndcg, best_recall, best_precision, best_params = results[0]
+    print(f"\nbest params ({all3_key}={best_all3:.4f}, {ndcg_key}={best_ndcg:.4f}, "
+          f"{recall_key}={best_recall:.4f}, precision@3={best_precision:.4f}):")
     print(best_params)
 
 

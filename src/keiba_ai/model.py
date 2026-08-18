@@ -33,10 +33,16 @@ RELEVANCE_COLUMN = "relevance"
 # Found via scripts/tune_hyperparams.py's random search over the 1-year JRA
 # dirt dataset (see README for the comparison table); pass `params=` to
 # train_model() to override for experimentation.
+#
+# eval_at controls what the ranking loss actually optimizes for -- [6] means
+# "get the true top-3 finishers ranked somewhere in the top 6", not "get the
+# top-3 order exactly right" (that would be eval_at=[3]). train_model derives
+# its NDCG/recall metric keys from this value, so changing it here is enough
+# to retarget training; a single-element list is assumed throughout.
 DEFAULT_PARAMS = {
     "objective": "lambdarank",
     "metric": "ndcg",
-    "eval_at": [3],
+    "eval_at": [6],
     "learning_rate": 0.02,
     "num_leaves": 31,
     "min_data_in_leaf": 30,
@@ -135,6 +141,38 @@ def _precision_at_k(valid_df: pd.DataFrame, score_col: str, k: int = 3) -> float
     return hits / total if total else float("nan")
 
 
+def _recall_at_k(valid_df: pd.DataFrame, score_col: str, k: int) -> float:
+    """Of the horses that actually finished top-3, what fraction were
+    captured somewhere in the model's top-k? The mirror image of
+    precision_at_k (which asks the reverse: of the predicted top-k, how many
+    actually finished top-3) -- this is what "get all 3 placers inside a
+    wider net of k picks" actually optimizes for."""
+    hits, total_actual = 0, 0
+    for _, group in valid_df.groupby("race_id"):
+        top_k = group.nlargest(min(k, len(group)), score_col)
+        hits += int((top_k["target_top3"] == 1).sum())
+        total_actual += int((group["target_top3"] == 1).sum())
+    return hits / total_actual if total_actual else float("nan")
+
+
+def _all_top3_in_top_k_rate(valid_df: pd.DataFrame, score_col: str, k: int) -> float:
+    """Race-level (stricter than recall_at_k): fraction of races where ALL
+    THREE actual top-3 finishers simultaneously land in the model's top-k --
+    i.e. "if I look at my top k picks, is every 1st/2nd/3rd place horse in
+    there?" Races with fewer than 3 finishers (rare DNF-heavy fields) are
+    skipped since "all 3" isn't well-defined for them."""
+    hits, total = 0, 0
+    for _, group in valid_df.groupby("race_id"):
+        if int((group["target_top3"] == 1).sum()) < 3:
+            continue
+        top_k_umaban = set(group.nlargest(min(k, len(group)), score_col)["umaban"])
+        actual_umaban = set(group.loc[group["target_top3"] == 1, "umaban"])
+        total += 1
+        if actual_umaban <= top_k_umaban:
+            hits += 1
+    return hits / total if total else float("nan")
+
+
 def train_model(
     df: pd.DataFrame,
     num_boost_round: int = 300,
@@ -187,7 +225,16 @@ def train_model(
     )
 
     valid_scores = booster.predict(X_valid, num_iteration=booster.best_iteration)
-    precision_at_3 = _precision_at_k(valid_df.assign(_score=valid_scores), score_col="_score", k=3)
+    scored_valid = valid_df.assign(_score=valid_scores)
+    precision_at_3 = _precision_at_k(scored_valid, score_col="_score", k=3)
+
+    # eval_at drives what the ranking loss itself optimizes for; the recall/
+    # all-captured metrics below are reported at that same k so the training
+    # target and the metrics used to judge it always agree (see DEFAULT_PARAMS).
+    top_k = resolved_params["eval_at"][0]
+    ndcg_at_k = float(booster.best_score["valid_0"][f"ndcg@{top_k}"])
+    recall_at_k = _recall_at_k(scored_valid, score_col="_score", k=top_k)
+    all_top3_rate = _all_top3_in_top_k_rate(scored_valid, score_col="_score", k=top_k)
 
     # Calibrate raw scores -> P(top 3) on the held-out validation split (never
     # the training split, which would just recover the model's own training
@@ -198,8 +245,10 @@ def train_model(
     calibrator.fit(valid_scores, valid_df["target_top3"])
 
     metrics = {
-        "valid_ndcg@3": float(booster.best_score["valid_0"]["ndcg@3"]),
+        f"valid_ndcg@{top_k}": ndcg_at_k,
         "valid_precision@3": float(precision_at_3),
+        f"valid_recall@{top_k}": float(recall_at_k),
+        f"valid_all_top3_in_top{top_k}": float(all_top3_rate),
         "best_iteration": int(booster.best_iteration or num_boost_round),
         "n_train": int(len(train_df)),
         "n_valid": int(len(valid_df)),

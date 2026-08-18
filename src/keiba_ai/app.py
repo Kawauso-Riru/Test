@@ -90,7 +90,15 @@ def show_result(feature_df: pd.DataFrame) -> None:
 
 
 def format_metrics(metrics: dict) -> str:
-    return f"NDCG@3: {metrics['valid_ndcg@3']:.3f}, 予測上位3頭の的中率(precision@3): {metrics['valid_precision@3']:.3f}"
+    ndcg_key = next((k for k in metrics if k.startswith("valid_ndcg@")), None)
+    all3_key = next((k for k in metrics if k.startswith("valid_all_top3_in_top")), None)
+    parts = [f"予測上位3頭の的中率(precision@3): {metrics['valid_precision@3']:.3f}"]
+    if all3_key:
+        top_k = all3_key.replace("valid_all_top3_in_top", "")
+        parts.append(f"1〜3着が上位{top_k}頭に全員入る確率: {metrics[all3_key]:.3f}")
+    if ndcg_key:
+        parts.append(f"{ndcg_key.replace('valid_', '').upper()}: {metrics[ndcg_key]:.3f}")
+    return ", ".join(parts)
 
 
 def race_label_lookup(df: pd.DataFrame, race_ids) -> dict:
