@@ -170,7 +170,12 @@ elif mode == "実データモデルを使う(学習済み)":
     # (PP) in ahead of the day (DD) -- e.g. every 2026 小倉 (place code "10",
     # the largest of the 10 JRA codes) race would sort after *any* other
     # 2026 course's race, regardless of which one actually happened later.
-    race_order = place_filtered[["race_id", "date"]].drop_duplicates("race_id").sort_values("date")
+    # Within a date, group by venue and then by race number (1R->12R) --
+    # otherwise same-day races interleave in whatever order they happened to
+    # land in the CSV, which reads as scattered rather than organized.
+    race_order = place_filtered[["race_id", "date", "place"]].drop_duplicates("race_id").copy()
+    race_order["race_no"] = race_order["race_id"].astype(str).str[-2:].astype(int)
+    race_order = race_order.sort_values(["date", "place", "race_no"])
     race_ids = race_order["race_id"].tolist()[-50:]
 
     if not race_ids:
