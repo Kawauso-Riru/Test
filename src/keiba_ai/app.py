@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import datetime
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from keiba_ai.features import build_prediction_frame, build_training_frame
@@ -19,6 +21,25 @@ from keiba_ai.io import read_race_csv
 from keiba_ai.model import KeibaModel, softmax_scores, train_model
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig, is_jra_race_id
 from keiba_ai.synth_data import generate_synthetic_results
+
+
+def fetch_with_retry(fn, *a, retries: int = 2, backoff: float = 3.0):
+    """Retry transient network errors (timeouts, connection resets, 4xx/5xx)
+    before giving up on one call -- mirrors scripts/predict_raceday.py's
+    helper of the same name, so a single flaky request doesn't abort the
+    whole "今日・明日のレースを予想" run and lose every race already
+    fetched before it. Returns None (not raising) after repeated failure or
+    a robots.txt denial; callers decide how to treat that."""
+    for attempt in range(retries + 1):
+        try:
+            return fn(*a)
+        except RobotsDisallowedError:
+            return None
+        except requests.RequestException:
+            if attempt == retries:
+                return None
+            time.sleep(backoff * (attempt + 1))
+    return None
 
 st.set_page_config(page_title="競馬予想AI", layout="wide")
 st.title("🏇 競馬予想AI")
@@ -277,11 +298,11 @@ elif mode == "今日・明日のレースを予想":
         )
         date_str = target_date.strftime("%Y%m%d")
         with st.spinner("開催レース一覧を取得中..."):
-            try:
-                races = scraper.list_upcoming_races_for_date(date_str)
-            except RobotsDisallowedError as exc:
-                st.error(f"robots.txt によりアクセスが禁止されています: {exc}")
-                st.stop()
+            races = fetch_with_retry(scraper.list_upcoming_races_for_date, date_str)
+
+        if races is None:
+            st.error("開催レース一覧の取得に失敗しました(通信エラー、またはrobots.txtによる禁止)。しばらくしてからもう一度お試しください。")
+            st.stop()
 
         jra_races = [r for r in races if is_jra_race_id(r["race_id"])]
         if not jra_races:
@@ -298,9 +319,8 @@ elif mode == "今日・明日のレースを予想":
         for i, race in enumerate(jra_races):
             race_id, place = race["race_id"], race["place"]
             status.text(f"取得中... {place} {int(race_id[-2:])}R ({i + 1}/{len(jra_races)})")
-            try:
-                parsed = scraper.fetch_shutuba(scraper.shutuba_url(race_id))
-            except RobotsDisallowedError:
+            parsed = fetch_with_retry(scraper.fetch_shutuba, scraper.shutuba_url(race_id))
+            if parsed is None:
                 progress.progress((i + 1) / len(jra_races))
                 continue
 
@@ -315,10 +335,7 @@ elif mode == "今日・明日のレースを予想":
                     shutuba_df["place"] = meta.get("place") or place
                     shutuba_df["race_name"] = meta.get("race_name", "")
 
-                    try:
-                        oikiri_entries = scraper.fetch_oikiri(scraper.oikiri_url(race_id))
-                    except RobotsDisallowedError:
-                        oikiri_entries = []
+                    oikiri_entries = fetch_with_retry(scraper.fetch_oikiri, scraper.oikiri_url(race_id)) or []
                     if oikiri_entries:
                         oikiri_df = pd.DataFrame(oikiri_entries)[["horse_id", "training_grade"]]
                         shutuba_df = shutuba_df.merge(oikiri_df, on="horse_id", how="left")

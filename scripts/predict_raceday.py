@@ -15,9 +15,11 @@ Usage:
 """
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -25,6 +27,25 @@ from keiba_ai.features import build_prediction_frame  # noqa: E402
 from keiba_ai.io import read_race_csv  # noqa: E402
 from keiba_ai.model import KeibaModel, softmax_scores  # noqa: E402
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig, is_jra_race_id  # noqa: E402
+
+
+def fetch_with_retry(fn, *a, retries: int = 2, backoff: float = 3.0):
+    """Retry transient network errors (timeouts, connection resets, 4xx/5xx);
+    skip on repeated failure or a robots.txt denial rather than aborting the
+    whole run -- a single flaky request shouldn't lose every race already
+    fetched before it."""
+    for attempt in range(retries + 1):
+        try:
+            return fn(*a)
+        except RobotsDisallowedError as exc:
+            print(f"  skip {a}: {exc}")
+            return None
+        except requests.RequestException as exc:
+            if attempt == retries:
+                print(f"  skip {a} after {retries + 1} attempts: {exc}")
+                return None
+            time.sleep(backoff * (attempt + 1))
+    return None
 
 
 def main() -> None:
@@ -50,7 +71,7 @@ def main() -> None:
     model = KeibaModel.load(Path(args.model))
     history = read_race_csv(args.history, parse_dates=["date"])
 
-    races = scraper.list_upcoming_races_for_date(args.date)
+    races = fetch_with_retry(scraper.list_upcoming_races_for_date, args.date) or []
     jra_races = [r for r in races if is_jra_race_id(r["race_id"])]
     if not jra_races:
         raise SystemExit(
@@ -62,10 +83,8 @@ def main() -> None:
     all_rows = []
     for race in jra_races:
         race_id, place = race["race_id"], race["place"]
-        try:
-            parsed = scraper.fetch_shutuba(scraper.shutuba_url(race_id))
-        except RobotsDisallowedError as exc:
-            print(f"  {race_id}: skip ({exc})")
+        parsed = fetch_with_retry(scraper.fetch_shutuba, scraper.shutuba_url(race_id))
+        if parsed is None:
             continue
         if not parsed["entries"]:
             print(f"  {race_id}: skip (no entries -- card may not be finalized yet)")
@@ -83,10 +102,7 @@ def main() -> None:
         shutuba["place"] = meta.get("place") or place
         shutuba["race_name"] = meta.get("race_name", "")
 
-        try:
-            oikiri_entries = scraper.fetch_oikiri(scraper.oikiri_url(race_id))
-        except RobotsDisallowedError:
-            oikiri_entries = []
+        oikiri_entries = fetch_with_retry(scraper.fetch_oikiri, scraper.oikiri_url(race_id)) or []
         if oikiri_entries:
             oikiri_df = pd.DataFrame(oikiri_entries)[["horse_id", "training_grade"]]
             shutuba = shutuba.merge(oikiri_df, on="horse_id", how="left")
