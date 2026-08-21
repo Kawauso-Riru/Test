@@ -16,7 +16,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from keiba_ai.features import build_prediction_frame, build_training_frame
+from keiba_ai.features import ALL_FEATURE_COLUMNS, build_prediction_frame, build_training_frame
 from keiba_ai.io import read_race_csv
 from keiba_ai.model import KeibaModel, softmax_scores, train_model
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig, is_jra_race_id
@@ -51,6 +51,9 @@ st.caption(
 
 REAL_MODEL_PATH = Path("models/model_dirt.joblib")
 REAL_HISTORY_PATH = Path("models/history.csv")
+REAL_DATA_PATH = Path("data/jra_results.csv")
+REAL_OIKIRI_PATH = Path("data/oikiri.csv")
+MARKET_FEATURE_COLUMNS = {"popularity_numeric", "odds_numeric"}
 
 
 @st.cache_resource
@@ -63,9 +66,27 @@ def get_or_train_demo_model():
 
 @st.cache_resource
 def load_real_dirt_model():
-    model = KeibaModel.load(REAL_MODEL_PATH)
-    history_df = read_race_csv(REAL_HISTORY_PATH, parse_dates=["date"])
-    return model, history_df
+    """Load the pre-trained model/history from disk if present (the normal
+    local-dev path, via `scripts/train_model.py`); otherwise train them
+    on the spot from the committed data/jra_results.csv (+ data/oikiri.csv
+    if present) -- e.g. on a fresh cloud deploy that only has the repo
+    checked out, not a locally-trained models/ directory. Training on the
+    full dataset takes well under a minute and only happens once per app
+    process thanks to @st.cache_resource."""
+    if REAL_MODEL_PATH.exists() and REAL_HISTORY_PATH.exists():
+        model = KeibaModel.load(REAL_MODEL_PATH)
+        history_df = read_race_csv(REAL_HISTORY_PATH, parse_dates=["date"])
+        return model, history_df
+
+    raw = read_race_csv(REAL_DATA_PATH)
+    if REAL_OIKIRI_PATH.exists():
+        oikiri = read_race_csv(REAL_OIKIRI_PATH)[["race_id", "horse_id", "training_grade"]]
+        raw = raw.merge(oikiri, on=["race_id", "horse_id"], how="left")
+    training_df = build_training_frame(raw)
+    fit_df = training_df[training_df["is_dirt"]]
+    feature_columns = [c for c in ALL_FEATURE_COLUMNS if c not in MARKET_FEATURE_COLUMNS]
+    model = train_model(fit_df, feature_columns=feature_columns)
+    return model, training_df
 
 
 st.sidebar.header("設定")
@@ -160,18 +181,19 @@ if mode == "デモデータで試す":
     st.caption("※ 合成生成した架空のレースです。実データではありません。")
 
 elif mode == "実データモデルを使う(学習済み)":
-    if not REAL_MODEL_PATH.exists() or not REAL_HISTORY_PATH.exists():
+    if not REAL_MODEL_PATH.exists() and not REAL_DATA_PATH.exists():
         st.warning(
-            "学習済みモデルが見つかりません(`models/model_dirt.joblib` / "
-            "`models/history.csv`)。先にコマンドラインで収集・学習してください:\n\n"
+            "学習済みモデルも学習データも見つかりません(`models/model_dirt.joblib` / "
+            "`data/jra_results.csv`)。先にコマンドラインでデータを収集してください:\n\n"
             "```bash\n"
             "python scripts/scrape_jra_dirt_results.py \\\n"
             "    --start-date 20240101 --end-date 20240630 --out data/jra_results.csv\n"
-            "python scripts/train_model.py --data data/jra_results.csv --dirt-only \\\n"
-            "    --model-out models/model_dirt.joblib --history-out models/history.csv\n"
             "```"
         )
         st.stop()
+
+    if not REAL_MODEL_PATH.exists():
+        st.info("学習済みモデルが見つからないため、その場でデータから学習します(数十秒かかります)。")
 
     model, history_df = load_real_dirt_model()
     dirt_history = history_df[history_df["surface"] == "ダート"]
@@ -250,16 +272,19 @@ elif mode == "今日・明日のレースを予想":
         "**まだ結果の出ていない、これから走るレース**が対象です。"
         "開催の数日前〜当日にカードが発表されてから使えます(発表前の日付は空振りになります)。"
     )
-    if not REAL_MODEL_PATH.exists() or not REAL_HISTORY_PATH.exists():
+    if not REAL_MODEL_PATH.exists() and not REAL_DATA_PATH.exists():
         st.warning(
-            "学習済みモデルが見つかりません(`models/model_dirt.joblib` / "
-            "`models/history.csv`)。先にコマンドラインで収集・学習してください:\n\n"
+            "学習済みモデルも学習データも見つかりません(`models/model_dirt.joblib` / "
+            "`data/jra_results.csv`)。先にコマンドラインでデータを収集してください:\n\n"
             "```bash\n"
-            "python scripts/train_model.py --data data/jra_results.csv --dirt-only \\\n"
-            "    --model-out models/model_dirt.joblib --history-out models/history.csv\n"
+            "python scripts/scrape_jra_dirt_results.py \\\n"
+            "    --start-date 20240101 --end-date 20240630 --out data/jra_results.csv\n"
             "```"
         )
         st.stop()
+
+    if not REAL_MODEL_PATH.exists():
+        st.info("学習済みモデルが見つからないため、その場でデータから学習します(数十秒かかります)。")
 
     model, history_df = load_real_dirt_model()
     st.success(f"学習済み実データモデルを読み込みました ({format_metrics(model.metrics)})")
