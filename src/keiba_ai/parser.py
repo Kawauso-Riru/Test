@@ -152,8 +152,59 @@ def parse_race_meta(soup: BeautifulSoup) -> dict:
     return meta
 
 
+_PAYOUT_ROW_CLASSES = {
+    "Tansho": "tansho", "Fukusho": "fukusho", "Wakuren": "wakuren",
+    "Umaren": "umaren", "Wide": "wide", "Umatan": "umatan",
+    "Fuku3": "fuku3", "Tan3": "tan3",
+}
+
+
+def parse_payout_html(html: str) -> dict:
+    """Parse a netkeiba result page's 払い戻し (payout) tables.
+
+    Returns {bet_type: {"combos": [[umaban, ...], ...], "payouts": [yen, ...]}}
+    for whichever of Tansho(単勝)/Fukusho(複勝)/Wakuren(枠連)/Umaren(馬連)/
+    Wide(ワイド)/Umatan(馬単)/Fuku3(3連複)/Tan3(3連単) rows are present.
+    combos[i] pairs with payouts[i] (yen won per 100-yen bet on that combo).
+    Fukusho/Wide have several combos+payouts (one per placed horse / winning
+    pair); every other bet type has exactly one. Absent for an unfinished
+    race (returns {}), same "just omit it" contract as parse_oikiri_html.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    payout = {}
+    for row_class, key in _PAYOUT_ROW_CLASSES.items():
+        row = soup.find("tr", class_=row_class)
+        if row is None:
+            continue
+        result_td = row.find("td", class_="Result")
+        payout_td = row.find("td", class_="Payout")
+        if result_td is None or payout_td is None:
+            continue
+
+        uls = result_td.find_all("ul")
+        if uls:
+            combos = [[li.get_text(strip=True) for li in ul.find_all("li") if li.get_text(strip=True)] for ul in uls]
+        else:
+            # Tansho/Fukusho use <div><span>umaban</span></div> instead of
+            # <ul><li>, with empty placeholder divs interspersed -- each
+            # non-empty value is its own single-horse "combo".
+            combos = [[v.get_text(strip=True)] for v in result_td.find_all("span") if v.get_text(strip=True)]
+
+        payout_span = payout_td.find("span")
+        payout_text = payout_span.decode_contents() if payout_span else payout_td.decode_contents()
+        payouts = [
+            int(re.sub(r"[^\d]", "", part))
+            for part in re.split(r"<br\s*/?>", payout_text)
+            if re.sub(r"[^\d]", "", part)
+        ]
+
+        if combos and payouts:
+            payout[key] = {"combos": combos, "payouts": payouts}
+    return payout
+
+
 def parse_race_result_html(html: str) -> dict:
-    """Parse a netkeiba-style race *result* page into {meta, entries}."""
+    """Parse a netkeiba-style race *result* page into {meta, entries, payout}."""
     soup = BeautifulSoup(html, "lxml")
     table = _find_entry_table(soup, {"着順", "馬番", "馬名"})
     entries = []
@@ -163,7 +214,7 @@ def parse_race_result_html(html: str) -> dict:
             record = _row_to_dict(row, header_map)
             if record.get("umaban", "").isdigit():
                 entries.append(record)
-    return {"meta": parse_race_meta(soup), "entries": entries}
+    return {"meta": parse_race_meta(soup), "entries": entries, "payout": parse_payout_html(html)}
 
 
 def parse_oikiri_html(html: str) -> list:

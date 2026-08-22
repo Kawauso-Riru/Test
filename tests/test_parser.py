@@ -1,8 +1,30 @@
 from pathlib import Path
 
-from keiba_ai.parser import parse_oikiri_html, parse_race_result_html, parse_shutuba_html
+from keiba_ai.parser import parse_oikiri_html, parse_payout_html, parse_race_result_html, parse_shutuba_html
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_parse_payout_html():
+    html = (FIXTURES / "payout_sample.html").read_text(encoding="utf-8")
+    payout = parse_payout_html(html)
+
+    assert payout["tansho"] == {"combos": [["10"]], "payouts": [260]}
+    assert payout["fukusho"] == {"combos": [["10"], ["11"], ["6"]], "payouts": [140, 230, 290]}
+    assert payout["umaren"] == {"combos": [["10", "11"]], "payouts": [950]}
+    assert payout["wide"] == {
+        "combos": [["10", "11"], ["6", "10"], ["6", "11"]],
+        "payouts": [430, 740, 1730],
+    }
+    assert payout["fuku3"] == {"combos": [["6", "10", "11"]], "payouts": [4820]}
+    assert payout["tan3"] == {"combos": [["10", "11", "6"]], "payouts": [16230]}
+
+
+def test_parse_race_result_html_includes_payout():
+    html = (FIXTURES / "race_result_sample.html").read_text(encoding="utf-8")
+    parsed = parse_race_result_html(html)
+    # The existing fixture has no payout table -- must come back {}, not KeyError/crash.
+    assert parsed["payout"] == {}
 
 
 def test_parse_oikiri_html():
