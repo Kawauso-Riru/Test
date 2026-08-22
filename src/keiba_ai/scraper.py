@@ -99,6 +99,20 @@ class PoliteScraper:
         safe_name = re_sub_safe(url)
         return self.config.cache_dir / f"{safe_name}.html"
 
+    def _invalidate_cache(self, url: str) -> None:
+        """Remove a cached page so the next fetch() re-hits the network.
+
+        Used for pages whose content can genuinely change over time before
+        settling (an upcoming race's shutuba/oikiri page, filled in
+        gradually as the racing office finalizes it) -- caching those
+        unconditionally would mean a shutuba checked once before entries
+        were published stays cached as "0 entries" forever, even days
+        later once the real card is up. Past-race result pages don't need
+        this: once posted, a result never changes."""
+        cache_path = self._cache_path(url)
+        if cache_path and cache_path.exists():
+            cache_path.unlink()
+
     def fetch(self, url: str) -> str:
         cache_path = self._cache_path(url)
         if cache_path and cache_path.exists():
@@ -123,10 +137,19 @@ class PoliteScraper:
         return parse_race_result_html(self.fetch(url))
 
     def fetch_shutuba(self, url: str) -> dict:
-        return parse_shutuba_html(self.fetch(url))
+        parsed = parse_shutuba_html(self.fetch(url))
+        if not parsed["entries"]:
+            # Card not finalized yet as of this fetch -- don't let the empty
+            # snapshot stick around and block a later retry from seeing the
+            # real entries once they're published (see _invalidate_cache).
+            self._invalidate_cache(url)
+        return parsed
 
     def fetch_oikiri(self, url: str) -> list:
-        return parse_oikiri_html(self.fetch(url))
+        entries = parse_oikiri_html(self.fetch(url))
+        if not entries:
+            self._invalidate_cache(url)
+        return entries
 
     @staticmethod
     def oikiri_url(race_id: str) -> str:
