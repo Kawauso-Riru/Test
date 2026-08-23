@@ -33,6 +33,7 @@ from keiba_ai.model import train_model  # noqa: E402
 
 SCRAPE_SCRIPT = Path(__file__).resolve().parent / "scrape_jra_dirt_results.py"
 SCRAPE_OIKIRI_SCRIPT = Path(__file__).resolve().parent / "scrape_oikiri.py"
+SCRAPE_PEDIGREE_SCRIPT = Path(__file__).resolve().parent / "scrape_pedigree.py"
 MARKET_FEATURE_COLUMNS = {"popularity_numeric", "odds_numeric"}
 
 
@@ -53,6 +54,8 @@ def main() -> None:
     parser.add_argument("--history-out", default="models/history.csv")
     parser.add_argument("--oikiri", default="data/oikiri.csv",
                          help="training-grade CSV kept in sync with --data via scripts/scrape_oikiri.py")
+    parser.add_argument("--pedigree", default="data/pedigree.csv",
+                         help="sire/damsire CSV kept in sync with --data via scripts/scrape_pedigree.py")
     parser.add_argument("--skip-retrain", action="store_true", help="only update the dataset, don't retrain")
     args = parser.parse_args()
 
@@ -121,6 +124,21 @@ def main() -> None:
         oikiri = read_race_csv(oikiri_path)[["race_id", "horse_id", "training_grade"]]
         combined = combined.merge(oikiri, on=["race_id", "horse_id"], how="left")
         print(f"merged training_grade: {combined['training_grade'].notna().sum()}/{len(combined)} rows have a grade")
+
+    # Resumable/incremental by design (see scrape_pedigree.py): only fetches
+    # whichever horse_ids aren't already in --pedigree yet, so a normal
+    # weekly run is a handful of new/debut horses, not a full re-scrape.
+    pedigree_path = Path(args.pedigree)
+    subprocess.run([
+        sys.executable, str(SCRAPE_PEDIGREE_SCRIPT),
+        "--data", str(data_path), "--out", str(pedigree_path),
+        "--min-interval", str(args.min_interval),
+        "--cache-dir", args.cache_dir, "--contact", args.contact,
+    ])
+    if pedigree_path.exists():
+        pedigree = read_race_csv(pedigree_path)[["horse_id", "sire_id", "damsire_id"]]
+        combined = combined.merge(pedigree, on="horse_id", how="left")
+        print(f"merged sire_id: {combined['sire_id'].notna().sum()}/{len(combined)} rows have a sire")
 
     training_df = build_training_frame(combined)
     fit_df = training_df[training_df["is_dirt"]] if args.dirt_only else training_df

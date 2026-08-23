@@ -54,6 +54,9 @@ def main() -> None:
     parser.add_argument("--dirt-only", action="store_true", help="skip turf races")
     parser.add_argument("--model", default="models/model_dirt.joblib")
     parser.add_argument("--history", default="models/history.csv")
+    parser.add_argument("--pedigree", default="data/pedigree.csv",
+                         help="sire/damsire CSV from scripts/scrape_pedigree.py -- static per horse, "
+                              "so merged directly rather than fetched live per race")
     parser.add_argument("--min-interval", type=float, default=2.0)
     parser.add_argument("--cache-dir", default="data/cache/netkeiba")
     parser.add_argument("--contact", default="set-your-email-here")
@@ -70,6 +73,8 @@ def main() -> None:
     )
     model = KeibaModel.load(Path(args.model))
     history = read_race_csv(args.history, parse_dates=["date"])
+    pedigree_path = Path(args.pedigree)
+    pedigree_df = read_race_csv(pedigree_path)[["horse_id", "sire_id", "damsire_id"]] if pedigree_path.exists() else None
 
     races = fetch_with_retry(scraper.list_upcoming_races_for_date, args.date) or []
     jra_races = [r for r in races if is_jra_race_id(r["race_id"])]
@@ -106,6 +111,9 @@ def main() -> None:
         if oikiri_entries:
             oikiri_df = pd.DataFrame(oikiri_entries)[["horse_id", "training_grade"]]
             shutuba = shutuba.merge(oikiri_df, on="horse_id", how="left")
+
+        if pedigree_df is not None:
+            shutuba = shutuba.merge(pedigree_df, on="horse_id", how="left")
 
         feature_df = build_prediction_frame(shutuba, history)
         feature_df["score"] = model.predict(feature_df)

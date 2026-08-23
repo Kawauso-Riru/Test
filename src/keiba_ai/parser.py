@@ -267,6 +267,56 @@ def parse_oikiri_html(html: str) -> list:
     return entries
 
 
+def _pedigree_cell_name_and_id(td) -> tuple:
+    a = td.find("a") if td is not None else None
+    if a is None:
+        return None, None
+    name = a.get_text(" ", strip=True)
+    m = re.search(r"/horse/(?:ped/)?(\w+)/?", a.get("href", ""))
+    return name or None, m.group(1) if m else None
+
+
+def parse_pedigree_html(html: str) -> dict:
+    """Parse a netkeiba 5-generation pedigree page
+    (db.netkeiba.com/horse/ped/<horse_id>/) into {sire, sire_id, dam,
+    dam_id, damsire, damsire_id}. Missing/absent fields (a horse not (yet)
+    in netkeiba's pedigree database, or a foreign ancestor with no linked
+    page) are simply omitted rather than raising.
+
+    The table is a standard rowspan-nested pedigree chart, not a regular
+    grid: row 0's first <td> (rowspan spanning the top half of the table)
+    is the sire; the first <td> of the row starting the bottom half is the
+    dam; that same row's *second* <td> (spanning a quarter of the table) is
+    the dam's own sire (母父/broodmare sire) -- the same
+    "top half of whatever subtree you're in" pattern recurses at every
+    generation, we just only care about the first two generations here.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table", class_="blood_table")
+    if table is None:
+        return {}
+    rows = table.find_all("tr")
+    if len(rows) < 2:
+        return {}
+
+    half = len(rows) // 2
+    sire_tds = rows[0].find_all("td")
+    dam_tds = rows[half].find_all("td")
+    if not sire_tds or not dam_tds:
+        return {}
+
+    sire, sire_id = _pedigree_cell_name_and_id(sire_tds[0])
+    dam, dam_id = _pedigree_cell_name_and_id(dam_tds[0])
+    damsire, damsire_id = _pedigree_cell_name_and_id(dam_tds[1]) if len(dam_tds) > 1 else (None, None)
+
+    result = {
+        "sire": sire, "sire_id": sire_id,
+        "dam": dam, "dam_id": dam_id,
+        "damsire": damsire, "damsire_id": damsire_id,
+    }
+    return {k: v for k, v in result.items() if v is not None}
+
+
 def parse_shutuba_html(html: str) -> dict:
     """Parse a netkeiba-style *shutuba* (pre-race entry list) page into {meta, entries}."""
     soup = BeautifulSoup(html, "lxml")

@@ -53,6 +53,7 @@ REAL_MODEL_PATH = Path("models/model_dirt.joblib")
 REAL_HISTORY_PATH = Path("models/history.csv")
 REAL_DATA_PATH = Path("data/jra_results.csv")
 REAL_OIKIRI_PATH = Path("data/oikiri.csv")
+REAL_PEDIGREE_PATH = Path("data/pedigree.csv")
 MARKET_FEATURE_COLUMNS = {"popularity_numeric", "odds_numeric"}
 
 
@@ -82,6 +83,9 @@ def load_real_dirt_model():
     if REAL_OIKIRI_PATH.exists():
         oikiri = read_race_csv(REAL_OIKIRI_PATH)[["race_id", "horse_id", "training_grade"]]
         raw = raw.merge(oikiri, on=["race_id", "horse_id"], how="left")
+    if REAL_PEDIGREE_PATH.exists():
+        pedigree = read_race_csv(REAL_PEDIGREE_PATH)[["horse_id", "sire_id", "damsire_id"]]
+        raw = raw.merge(pedigree, on="horse_id", how="left")
     training_df = build_training_frame(raw)
     fit_df = training_df[training_df["is_dirt"]]
     feature_columns = [c for c in ALL_FEATURE_COLUMNS if c not in MARKET_FEATURE_COLUMNS]
@@ -239,6 +243,10 @@ elif mode == "実データモデルを使う(学習済み)":
         "sex_age", "kinryo", "horse_weight", "surface", "distance", "track_condition", "place",
         "popularity", "odds",
     ]
+    # sire_id/damsire_id are static per horse, so (unlike horse_*_before
+    # stats) they only reach this replay via the row itself -- present only
+    # if data/pedigree.csv existed when history_df was built.
+    shutuba_cols += [c for c in ("sire_id", "damsire_id") if c in race_rows.columns]
     shutuba = race_rows[shutuba_cols].copy()
     # Only use history strictly before this race's date -- otherwise the
     # race's own result would leak into the stats used to predict it.
@@ -288,6 +296,10 @@ elif mode == "今日・明日のレースを予想":
 
     model, history_df = load_real_dirt_model()
     st.success(f"学習済み実データモデルを読み込みました ({format_metrics(model.metrics)})")
+    pedigree_df = (
+        read_race_csv(REAL_PEDIGREE_PATH)[["horse_id", "sire_id", "damsire_id"]]
+        if REAL_PEDIGREE_PATH.exists() else None
+    )
 
     today = datetime.date.today()
     if "predict_date" not in st.session_state:
@@ -364,6 +376,9 @@ elif mode == "今日・明日のレースを予想":
                     if oikiri_entries:
                         oikiri_df = pd.DataFrame(oikiri_entries)[["horse_id", "training_grade"]]
                         shutuba_df = shutuba_df.merge(oikiri_df, on="horse_id", how="left")
+
+                    if pedigree_df is not None:
+                        shutuba_df = shutuba_df.merge(pedigree_df, on="horse_id", how="left")
 
                     feature_df = add_predictions(model, build_prediction_frame(shutuba_df, history_df))
                     race_no = int(race_id[-2:])

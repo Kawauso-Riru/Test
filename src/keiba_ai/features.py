@@ -119,6 +119,18 @@ CATEGORICAL_FEATURE_COLUMNS = [
     # (the field's competitive level) that was fetched all along (parse_race_meta
     # extracts race_name) but never actually kept as a feature until now.
     "race_class",
+    # Sire (父) and damsire (母父/broodmare sire) from netkeiba's free
+    # pedigree page (scripts/scrape_pedigree.py) -- static per horse, known
+    # from birth, so unlike horse_* this needs no leak-free "_before"
+    # treatment. Useful mainly for lightly-raced/debut horses whose own
+    # race history is too thin for horse_runs_before etc. to say much.
+    # Many foals share a famous sire, giving LightGBM repeated examples per
+    # category -- unlike horse_id itself, which is nearly 1:1 with rows and
+    # thus useless as a raw category. dam_id is deliberately excluded from
+    # this list (kept in data/pedigree.csv for completeness): each mare has
+    # very few foals, so it's nearly as high-cardinality/sparse as horse_id.
+    "sire_id",
+    "damsire_id",
 ]
 
 ALL_FEATURE_COLUMNS = NUMERIC_FEATURE_COLUMNS + CATEGORICAL_FEATURE_COLUMNS
@@ -190,7 +202,7 @@ def _parse_early_position(passing) -> float:
     return float(m.group(1)) if m else np.nan
 
 
-_ID_COLUMNS = ("horse_id", "jockey_id", "trainer_id")
+_ID_COLUMNS = ("horse_id", "jockey_id", "trainer_id", "sire_id", "damsire_id")
 _RAW_NUMERIC_COLUMNS = ("waku", "umaban", "kinryo", "distance")
 
 
@@ -249,6 +261,10 @@ def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["odds_numeric"] = pd.to_numeric(df["odds"], errors="coerce") if "odds" in df.columns else np.nan
     if "training_grade" not in df.columns:
         df["training_grade"] = np.nan
+    if "sire_id" not in df.columns:
+        df["sire_id"] = np.nan
+    if "damsire_id" not in df.columns:
+        df["damsire_id"] = np.nan
 
     # Known in advance -- race conditions (含む格) are published with the
     # entry list, well before the race.

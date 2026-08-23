@@ -17,17 +17,19 @@ models/*.txt
 models/*.joblib
 models/*.csv
 
-# data/jra_results.csv and data/oikiri.csv ARE tracked: both are raw
-# scraped datasets, not reproducible without re-scraping (see
-# scripts/scrape_oikiri.py for the latter's caveats). models/model_dirt.joblib
-# and models/history.csv are NOT tracked -- both are fully reproducible from
-# data/jra_results.csv (+ data/oikiri.csv) in seconds via
-# scripts/train_model.py, and history.csv in particular is large (~5x the
-# raw CSV, since it carries every derived feature column) for something with
-# zero information not already in the raw data. See the weekly_update
-# workflow / README for how CI publishes a fresh model as a downloadable
-# artifact instead of committing it.
+# data/jra_results.csv, data/oikiri.csv, and data/pedigree.csv ARE tracked:
+# all three are raw scraped datasets, not reproducible without re-scraping
+# (see scripts/scrape_oikiri.py / scripts/scrape_pedigree.py for their
+# caveats). models/model_dirt.joblib and models/history.csv are NOT tracked
+# -- both are fully reproducible from data/jra_results.csv (+ data/oikiri.csv
+# + data/pedigree.csv) in seconds via scripts/train_model.py, and
+# history.csv in particular is large (~5x the raw CSV, since it carries
+# every derived feature column) for something with zero information not
+# already in the raw data. See the weekly_update workflow / README for how
+# CI publishes a fresh model as a downloadable artifact instead of
+# committing it.
 !data/jra_results.csv
 !data/oikiri.csv
+!data/pedigree.csv
 !data/.gitkeep
 !models/.gitkeep
