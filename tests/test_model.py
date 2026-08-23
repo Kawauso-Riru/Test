@@ -81,3 +81,13 @@ def test_calibrated_top3_probability_is_bounded_and_monotonic():
     # exact argsort match).
     order = np.argsort(scores)
     assert (np.diff(probs[order]) >= -1e-9).all()
+
+    # predict_win_probability mirrors predict_top3_probability exactly, just
+    # calibrated to P(1st) -- same bounds/monotonicity contract, and it must
+    # never exceed the top-3 probability for the same horse (finishing 1st
+    # implies finishing top-3, so the calibrated curves shouldn't cross).
+    assert model.win_calibrator is not None
+    win_probs = model.predict_win_probability(feature_df)
+    assert ((win_probs >= 0) & (win_probs <= 1)).all()
+    assert (np.diff(win_probs[order]) >= -1e-9).all()
+    assert (win_probs <= probs + 1e-9).all()

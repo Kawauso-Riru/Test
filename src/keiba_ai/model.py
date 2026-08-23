@@ -88,6 +88,7 @@ class KeibaModel:
     metrics: dict
     feature_columns: list = None  # None (old pickles) means ALL_FEATURE_COLUMNS
     calibrator: IsotonicRegression = None  # None (old pickles) means no calibration available
+    win_calibrator: IsotonicRegression = None  # None (old pickles) means no win calibration available
 
     def _prepare(self, df: pd.DataFrame) -> pd.DataFrame:
         X = df[self.feature_columns or ALL_FEATURE_COLUMNS].copy()
@@ -116,6 +117,19 @@ class KeibaModel:
             lo, hi = scores.min(), scores.max()
             return np.zeros_like(scores) if hi <= lo else (scores - lo) / (hi - lo)
         return self.calibrator.predict(scores)
+
+    def predict_win_probability(self, df: pd.DataFrame) -> np.ndarray:
+        """Calibrated P(finishes 1st), independent per horse -- same isotonic
+        calibration approach as predict_top3_probability, fit on target_win
+        instead of target_top3. This is what an expected-value bet needs:
+        EV = calibrated_win_probability * final_odds - 1. Falls back to raw
+        scores rescaled into [0, 1] for older pickles saved before this
+        calibration existed (a much cruder proxy -- treat with caution)."""
+        scores = self.predict(df)
+        if self.win_calibrator is None:
+            lo, hi = scores.min(), scores.max()
+            return np.zeros_like(scores) if hi <= lo else (scores - lo) / (hi - lo)
+        return self.win_calibrator.predict(scores)
 
     def save(self, path: Path) -> None:
         path = Path(path)
@@ -251,6 +265,11 @@ def train_model(
     calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
     calibrator.fit(valid_scores, valid_df["target_top3"])
 
+    # Same idea, calibrated to P(1st) instead of P(top 3) -- needed for
+    # win-bet expected value (EV = calibrated_win_probability * odds - 1).
+    win_calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    win_calibrator.fit(valid_scores, valid_df["target_win"])
+
     metrics = {
         f"valid_ndcg@{top_k}": ndcg_at_k,
         "valid_precision@3": float(precision_at_3),
@@ -264,5 +283,5 @@ def train_model(
     }
     return KeibaModel(
         booster=booster, encoder=encoder, metrics=metrics,
-        feature_columns=feature_columns, calibrator=calibrator,
+        feature_columns=feature_columns, calibrator=calibrator, win_calibrator=win_calibrator,
     )
