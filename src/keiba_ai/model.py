@@ -211,7 +211,12 @@ def train_model(
     """
     feature_columns = feature_columns or ALL_FEATURE_COLUMNS
     df = df.dropna(subset=[RELEVANCE_COLUMN]).reset_index(drop=True)
-    encoder = CategoryEncoder.fit(df, CATEGORICAL_FEATURE_COLUMNS)
+    # Fit only on whichever categorical columns are actually in feature_columns:
+    # a caller excluding a categorical column (e.g. a comparison run without
+    # sire_id) would otherwise still get it encoded, and then KeyError the
+    # moment transform() tries to set it on the feature_columns-only subset.
+    categorical_in_use = [c for c in CATEGORICAL_FEATURE_COLUMNS if c in feature_columns]
+    encoder = CategoryEncoder.fit(df, categorical_in_use)
 
     splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
     train_idx, valid_idx = next(splitter.split(df, df[RELEVANCE_COLUMN], groups=df["race_id"]))
@@ -225,7 +230,6 @@ def train_model(
     X_valid = encoder.transform(valid_df[feature_columns])
     train_group = train_df.groupby("race_id", sort=False).size().values
     valid_group = valid_df.groupby("race_id", sort=False).size().values
-    categorical_in_use = [c for c in CATEGORICAL_FEATURE_COLUMNS if c in feature_columns]
 
     train_set = lgb.Dataset(
         X_train, label=train_df[RELEVANCE_COLUMN], group=train_group,

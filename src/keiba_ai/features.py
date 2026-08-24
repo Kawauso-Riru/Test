@@ -119,19 +119,26 @@ CATEGORICAL_FEATURE_COLUMNS = [
     # (the field's competitive level) that was fetched all along (parse_race_meta
     # extracts race_name) but never actually kept as a feature until now.
     "race_class",
-    # Sire (父) and damsire (母父/broodmare sire) from netkeiba's free
-    # pedigree page (scripts/scrape_pedigree.py) -- static per horse, known
-    # from birth, so unlike horse_* this needs no leak-free "_before"
-    # treatment. Useful mainly for lightly-raced/debut horses whose own
-    # race history is too thin for horse_runs_before etc. to say much.
-    # Many foals share a famous sire, giving LightGBM repeated examples per
-    # category -- unlike horse_id itself, which is nearly 1:1 with rows and
-    # thus useless as a raw category. dam_id is deliberately excluded from
-    # this list (kept in data/pedigree.csv for completeness): each mare has
-    # very few foals, so it's nearly as high-cardinality/sparse as horse_id.
-    "sire_id",
-    "damsire_id",
 ]
+
+# Sire (父) / damsire (母父) from netkeiba's free pedigree page
+# (scripts/scrape_pedigree.py -> data/pedigree.csv) were tried here as raw
+# categorical features -- the hypothesis being that many foals share a
+# famous sire, so (unlike horse_id itself) it's a low/moderate-cardinality
+# category with repeated examples, useful especially for lightly-raced/debut
+# horses whose own horse_runs_before etc. are too thin to say much.
+#
+# A 5-seed train/valid split comparison (with vs. without sire_id/damsire_id,
+# everything else identical) found it *hurts* every metric on 4-5 of 5 seeds
+# -- small (ndcg@6 -0.005~-0.017) but consistent, not noise. Most likely: raw
+# sire/damsire IDs are still a few thousand distinct values, and LightGBM's
+# already-shallow trees (num_leaves=15) spend split budget on this sparse,
+# per-category-thin signal instead of the richer horse_dirt_* history
+# features, at a net loss. So this is deliberately NOT in
+# CATEGORICAL_FEATURE_COLUMNS/ALL_FEATURE_COLUMNS -- data/pedigree.csv is
+# still collected and merge-wired (train_model.py --pedigree etc.) for any
+# future attempt at a smarter encoding (e.g. each sire's own aggregate
+# win/top3 rate instead of a raw ID), just not used as-is.
 
 ALL_FEATURE_COLUMNS = NUMERIC_FEATURE_COLUMNS + CATEGORICAL_FEATURE_COLUMNS
 
