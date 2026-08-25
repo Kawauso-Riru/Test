@@ -33,3 +33,8 @@ models/*.csv
 !data/pedigree.csv
 !data/.gitkeep
 !models/.gitkeep
+
+# scripts/feature_group_search.py's own resume checkpoint -- transient
+# scratch state for one in-progress search run, cheap to regenerate by
+# rerunning the script, not a project deliverable like the CSVs above.
+data/feature_group_search_checkpoint.json
