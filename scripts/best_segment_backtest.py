@@ -109,6 +109,7 @@ def main() -> None:
     parser.add_argument("--min-interval", type=float, default=1.5)
     parser.add_argument("--cache-dir", default="data/cache/netkeiba")
     parser.add_argument("--contact", default="set-your-email-here")
+    parser.add_argument("--out", help="optional CSV of per-race detail (all seeds pooled)")
     args = parser.parse_args()
 
     raw = read_race_csv(args.data)
@@ -137,6 +138,9 @@ def main() -> None:
         print(f"seed {seed}: {len(df)} races processed")
 
     combined = pd.concat(all_dfs, ignore_index=True)
+    if args.out:
+        combined.to_csv(args.out, index=False)
+        print(f"wrote per-race detail -> {args.out}")
     segment = combined[
         combined["race_class"].isin(LOW_CLASSES) & (combined["popularity"] == 1)
     ]
@@ -149,7 +153,7 @@ def main() -> None:
 
     print(f"\n=== さらに自信度で絞り込むと? (セグメント内, n={len(segment)}) ===")
     print(f"{'confidence quantile':>20s} {'n':>6s} {'複勝ROI':>9s} {'per-seed std':>13s}")
-    for q in [0.0, 0.3, 0.5, 0.7]:
+    for q in [0.0, 0.3, 0.5, 0.7, 0.85, 0.9, 0.95]:
         thresh = segment["top3_prob"].quantile(q)
         sub = segment[segment["top3_prob"] >= thresh]
         f_roi = roi(sub["f_ret"], 1, args.unit)
