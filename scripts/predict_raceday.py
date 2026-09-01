@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from keiba_ai.features import build_prediction_frame  # noqa: E402
 from keiba_ai.io import read_race_csv  # noqa: E402
-from keiba_ai.model import KeibaModel, softmax_scores  # noqa: E402
+from keiba_ai.model import KeibaModel, bet_type_hint, softmax_scores  # noqa: E402
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig, is_jra_race_id  # noqa: E402
 
 
@@ -127,6 +127,9 @@ def main() -> None:
         print(f"\n=== {race_label} ===")
         print(result[["umaban", "horse_name", "jockey", "top3_probability(%)", "relative_share(%)"]]
               .head(args.top_n).to_string(index=False))
+        if len(result) >= 6:
+            top6_probs = result["top3_probability(%)"].head(6).to_numpy() / 100.0
+            print(f"買い方の目安: {bet_type_hint(top6_probs)}")
 
         all_rows.append(result[[
             "race_id", "race_name", "umaban", "horse_name", "jockey",

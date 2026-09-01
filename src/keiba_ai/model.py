@@ -151,6 +151,30 @@ def softmax_scores(scores) -> np.ndarray:
     return exp / exp.sum()
 
 
+# Quartile boundaries of spread6 (std dev of the top-6 picks' calibrated
+# top3_probability) from scripts/bet_type_recommender_backtest.py's 6-seed,
+# 8,317-race backtest: 複勝 was the single best bet type in every bucket
+# tested, but combo bets (ワイド/馬連BOX etc.) closed most of the gap when
+# the top 6 were clearly differentiated (top quartile) and fell further
+# behind when they were bunched together (bottom quartile). See README's
+# "予測の「形」と買い方の相性" section for the full numbers.
+_SPREAD6_LOW_QUARTILE = 0.062
+_SPREAD6_HIGH_QUARTILE = 0.109
+
+
+def bet_type_hint(top6_probs) -> str:
+    """Betting-strategy hint for one race, from its top-6 picks' calibrated
+    top3_probability (0-1 scale). 複勝 is always the recommended default --
+    this only flags whether combo bets are relatively more/less competitive
+    for this particular race's shape."""
+    spread6 = float(np.std(top6_probs))
+    if spread6 >= _SPREAD6_HIGH_QUARTILE:
+        return "複勝が基本。上位陣の実力差がはっきりしたレースなので、ワイド/馬連BOXも比較的相性良好"
+    if spread6 <= _SPREAD6_LOW_QUARTILE:
+        return "複勝中心が無難。上位陣が拮抗しており、組み合わせ買い(ワイド/馬連/3連複BOX)は分が悪い"
+    return "複勝が基本(組み合わせ買いとの差は中程度)"
+
+
 def _precision_at_k(valid_df: pd.DataFrame, score_col: str, k: int = 3) -> float:
     """Of the model's top-k predicted horses per race, what fraction actually
     finished in the top 3? A business-relevant complement to NDCG."""

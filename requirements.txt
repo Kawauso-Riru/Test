@@ -3,6 +3,7 @@ beautifulsoup4>=4.12
 lxml>=5.0
 pandas>=2.0
 numpy>=1.26
+scipy>=1.11
 scikit-learn>=1.4
 lightgbm>=4.3
 streamlit>=1.33
