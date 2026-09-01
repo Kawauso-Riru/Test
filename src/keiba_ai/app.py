@@ -18,7 +18,7 @@ import streamlit as st
 
 from keiba_ai.features import ALL_FEATURE_COLUMNS, build_prediction_frame, build_training_frame
 from keiba_ai.io import read_race_csv
-from keiba_ai.model import KeibaModel, softmax_scores, train_model
+from keiba_ai.model import KeibaModel, bet_type_hint, softmax_scores, train_model
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig, is_jra_race_id
 from keiba_ai.synth_data import generate_synthetic_results
 
@@ -133,6 +133,9 @@ def show_result(feature_df: pd.DataFrame) -> None:
         "**相対スコア(%)**: そのレース内での相対的な強さを、フィールド内で合計100%になるよう表示したもの"
         "(的中確率そのものではない)。"
     )
+    if len(result) >= 6:
+        top6_probs = result["3着以内率(推定,%)"].head(6).to_numpy() / 100.0
+        st.info(f"買い方の目安: {bet_type_hint(top6_probs)}")
 
 
 def format_metrics(metrics: dict) -> str:
