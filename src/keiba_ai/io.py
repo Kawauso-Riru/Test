@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import pandas as pd
 
-ID_COLUMN_DTYPES = {"horse_id": str, "jockey_id": str, "trainer_id": str}
+ID_COLUMN_DTYPES = {
+    "horse_id": str, "jockey_id": str, "trainer_id": str,
+    "sire_id": str, "dam_id": str, "damsire_id": str,
+}
 
 
 def read_race_csv(path, parse_dates=None) -> pd.DataFrame:

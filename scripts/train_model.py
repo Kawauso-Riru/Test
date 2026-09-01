@@ -45,6 +45,9 @@ def main() -> None:
     parser.add_argument("--oikiri", default="data/oikiri.csv",
                          help="optional training-grade CSV from scripts/scrape_oikiri.py; "
                               "merged in as the training_grade feature if the file exists")
+    parser.add_argument("--pedigree", default="data/pedigree.csv",
+                         help="optional sire/damsire CSV from scripts/scrape_pedigree.py; "
+                              "merged in (by horse_id) as the sire_id/damsire_id features if the file exists")
     parser.add_argument("--dirt-only", action="store_true", help="fit only on dirt (ダート) races")
     parser.add_argument("--include-market-features", action="store_true",
                          help="keep popularity/odds as features (see caveat above)")
@@ -59,6 +62,11 @@ def main() -> None:
         oikiri = read_race_csv(oikiri_path)[["race_id", "horse_id", "training_grade"]]
         raw = raw.merge(oikiri, on=["race_id", "horse_id"], how="left")
         print(f"merged training_grade: {raw['training_grade'].notna().sum()}/{len(raw)} rows have a grade")
+    pedigree_path = Path(args.pedigree)
+    if pedigree_path.exists():
+        pedigree = read_race_csv(pedigree_path)[["horse_id", "sire_id", "damsire_id"]]
+        raw = raw.merge(pedigree, on="horse_id", how="left")
+        print(f"merged sire_id: {raw['sire_id'].notna().sum()}/{len(raw)} rows have a sire")
     training_df = build_training_frame(raw)
 
     fit_df = training_df[training_df["is_dirt"]] if args.dirt_only else training_df

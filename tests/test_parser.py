@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from keiba_ai.parser import parse_oikiri_html, parse_payout_html, parse_race_result_html, parse_shutuba_html
+from keiba_ai.parser import parse_oikiri_html, parse_payout_html, parse_pedigree_html, parse_race_result_html, parse_shutuba_html
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -25,6 +25,22 @@ def test_parse_race_result_html_includes_payout():
     parsed = parse_race_result_html(html)
     # The existing fixture has no payout table -- must come back {}, not KeyError/crash.
     assert parsed["payout"] == {}
+
+
+def test_parse_pedigree_html():
+    html = (FIXTURES / "pedigree_sample.html").read_text(encoding="utf-8")
+    pedigree = parse_pedigree_html(html)
+
+    assert pedigree["sire"] == "サンプルシャー SampleSire(英)"
+    assert pedigree["sire_id"] == "000a013a38"
+    assert pedigree["dam"] == "サンプルダム"
+    assert pedigree["dam_id"] == "2016100748"
+    assert pedigree["damsire"] == "サンプルダムチチ"
+    assert pedigree["damsire_id"] == "2008102636"
+
+
+def test_parse_pedigree_html_missing_table_returns_empty():
+    assert parse_pedigree_html("<html><body>no table here</body></html>") == {}
 
 
 def test_parse_oikiri_html():

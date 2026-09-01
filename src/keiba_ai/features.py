@@ -121,6 +121,25 @@ CATEGORICAL_FEATURE_COLUMNS = [
     "race_class",
 ]
 
+# Sire (父) / damsire (母父) from netkeiba's free pedigree page
+# (scripts/scrape_pedigree.py -> data/pedigree.csv) were tried here as raw
+# categorical features -- the hypothesis being that many foals share a
+# famous sire, so (unlike horse_id itself) it's a low/moderate-cardinality
+# category with repeated examples, useful especially for lightly-raced/debut
+# horses whose own horse_runs_before etc. are too thin to say much.
+#
+# A 5-seed train/valid split comparison (with vs. without sire_id/damsire_id,
+# everything else identical) found it *hurts* every metric on 4-5 of 5 seeds
+# -- small (ndcg@6 -0.005~-0.017) but consistent, not noise. Most likely: raw
+# sire/damsire IDs are still a few thousand distinct values, and LightGBM's
+# already-shallow trees (num_leaves=15) spend split budget on this sparse,
+# per-category-thin signal instead of the richer horse_dirt_* history
+# features, at a net loss. So this is deliberately NOT in
+# CATEGORICAL_FEATURE_COLUMNS/ALL_FEATURE_COLUMNS -- data/pedigree.csv is
+# still collected and merge-wired (train_model.py --pedigree etc.) for any
+# future attempt at a smarter encoding (e.g. each sire's own aggregate
+# win/top3 rate instead of a raw ID), just not used as-is.
+
 ALL_FEATURE_COLUMNS = NUMERIC_FEATURE_COLUMNS + CATEGORICAL_FEATURE_COLUMNS
 
 # Rough sprint/mile/long buckets used for both the distance_band categorical
@@ -190,7 +209,7 @@ def _parse_early_position(passing) -> float:
     return float(m.group(1)) if m else np.nan
 
 
-_ID_COLUMNS = ("horse_id", "jockey_id", "trainer_id")
+_ID_COLUMNS = ("horse_id", "jockey_id", "trainer_id", "sire_id", "damsire_id")
 _RAW_NUMERIC_COLUMNS = ("waku", "umaban", "kinryo", "distance")
 
 
@@ -249,6 +268,10 @@ def add_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["odds_numeric"] = pd.to_numeric(df["odds"], errors="coerce") if "odds" in df.columns else np.nan
     if "training_grade" not in df.columns:
         df["training_grade"] = np.nan
+    if "sire_id" not in df.columns:
+        df["sire_id"] = np.nan
+    if "damsire_id" not in df.columns:
+        df["damsire_id"] = np.nan
 
     # Known in advance -- race conditions (含む格) are published with the
     # entry list, well before the race.

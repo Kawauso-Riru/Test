@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from .parser import parse_oikiri_html, parse_race_result_html, parse_shutuba_html
+from .parser import parse_oikiri_html, parse_pedigree_html, parse_race_result_html, parse_shutuba_html
 
 DEFAULT_USER_AGENT = "keiba-ai-research-bot/0.1 (+contact: set-your-email-here)"
 
@@ -202,6 +202,15 @@ class PoliteScraper:
     @staticmethod
     def shutuba_url(race_id: str) -> str:
         return f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+
+    def fetch_pedigree(self, url: str) -> dict:
+        return parse_pedigree_html(self.fetch(url))
+
+    @staticmethod
+    def pedigree_url(horse_id: str) -> str:
+        # Free, un-paywalled 5-generation pedigree chart -- unlike the
+        # oikiri page's premium split, this whole page is public.
+        return f"https://db.netkeiba.com/horse/ped/{horse_id}/"
 
 
 def re_sub_safe(url: str) -> str:
