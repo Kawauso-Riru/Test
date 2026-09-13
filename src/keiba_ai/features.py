@@ -213,6 +213,9 @@ _ID_COLUMNS = ("horse_id", "jockey_id", "trainer_id", "sire_id", "damsire_id")
 _RAW_NUMERIC_COLUMNS = ("waku", "umaban", "kinryo", "distance")
 
 
+_ZERO_PADDED_ID_COLUMNS = ("jockey_id", "trainer_id")
+
+
 def _normalize_id_and_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Freshly-scraped shutuba data keeps every column as plain strings from
     HTML parsing, while data that's round-tripped through a CSV gets numeric
@@ -222,11 +225,26 @@ def _normalize_id_and_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
     prediction input skips the CSV round-trip -- so both training and
     prediction paths normalize explicitly here rather than relying on
     whatever dtype the caller's data happened to arrive in.
+
+    jockey_id/trainer_id get an extra fix: netkeiba's own pages give them
+    zero-padded ("01166"), but every historical row in this project's data
+    lost that leading zero somewhere upstream (an int64 round-trip strips
+    it) and was saved as "1166" -- consistently enough that training never
+    noticed. A freshly-scraped shutuba frame still has the padded form, so
+    without stripping it here too, build_prediction_frame's merge against
+    jockey/trainer history silently matches nothing and those features come
+    back all-NaN for every live prediction. Stripping leading zeros here
+    matches the (accidental) convention already baked into the historical
+    data, and is a no-op for values that never had a leading zero.
     """
     df = df.copy()
     for col in _ID_COLUMNS:
         if col in df.columns:
             df[col] = df[col].astype(str)
+    for col in _ZERO_PADDED_ID_COLUMNS:
+        if col in df.columns:
+            stripped = df[col].str.lstrip("0")
+            df[col] = stripped.mask(stripped == "", "0")
     for col in _RAW_NUMERIC_COLUMNS:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
