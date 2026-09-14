@@ -103,12 +103,13 @@ class PoliteScraper:
         """Remove a cached page so the next fetch() re-hits the network.
 
         Used for pages whose content can genuinely change over time before
-        settling (an upcoming race's shutuba/oikiri page, filled in
-        gradually as the racing office finalizes it) -- caching those
-        unconditionally would mean a shutuba checked once before entries
-        were published stays cached as "0 entries" forever, even days
-        later once the real card is up. Past-race result pages don't need
-        this: once posted, a result never changes."""
+        settling: an upcoming race's shutuba/oikiri page, filled in
+        gradually as the racing office finalizes it, and a result page
+        fetched before the race has actually run (its payout/entries are
+        still empty). Once a result page has real entries, it's final and
+        stays cached -- but caching an empty snapshot unconditionally would
+        mean a result checked mid-raceday stays "no entries" forever, even
+        after the race finishes later that same day."""
         cache_path = self._cache_path(url)
         if cache_path and cache_path.exists():
             cache_path.unlink()
@@ -134,7 +135,12 @@ class PoliteScraper:
         return html
 
     def fetch_race_result(self, url: str) -> dict:
-        return parse_race_result_html(self.fetch(url))
+        parsed = parse_race_result_html(self.fetch(url))
+        if not parsed["entries"]:
+            # Race hasn't finished (or posted) yet as of this fetch -- see
+            # _invalidate_cache.
+            self._invalidate_cache(url)
+        return parsed
 
     def fetch_shutuba(self, url: str) -> dict:
         parsed = parse_shutuba_html(self.fetch(url))
