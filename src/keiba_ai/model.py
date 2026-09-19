@@ -175,6 +175,38 @@ def bet_type_hint(top6_probs) -> str:
     return "複勝が基本(組み合わせ買いとの差は中程度)"
 
 
+# From scripts/longshot_signal_backtest.py's 6-seed, 84,332-horse backtest:
+# among odds>=30 long shots, the model's own top pick (by score, market
+# features excluded from training) hit top-3 at ~9.0% vs a ~5.5% band
+# average -- a real, if modest, lift. 20% requires roughly double that
+# baseline before flagging, so this stays a "worth a look" alert, not a
+# claim that the flagged horse is a profitable bet on its own -- real ROI
+# for this segment still lands under 100% (単勝72%/複勝74% pooled).
+LONGSHOT_ODDS_MIN = 20.0
+LONGSHOT_TOP3_PROB_MIN = 0.20
+
+
+def longshot_value_alert(df: pd.DataFrame, prob_col: str = "top3_probability(%)") -> str | None:
+    """For one race's full entry list (needs odds_numeric, plus `prob_col`
+    on a 0-100 scale -- see predict_top3_probability), flags the single
+    most-promising long shot if one clears the bar, else returns None so
+    callers can skip the race silently. Odds are usually unknown ("**")
+    until shortly before post time, so this is only useful re-run close to
+    race day, not days ahead."""
+    if "odds_numeric" not in df.columns or prob_col not in df.columns:
+        return None
+    longshots = df[df["odds_numeric"] >= LONGSHOT_ODDS_MIN]
+    if longshots.empty:
+        return None
+    best = longshots.sort_values(prob_col, ascending=False).iloc[0]
+    if best[prob_col] < LONGSHOT_TOP3_PROB_MIN * 100:
+        return None
+    return (
+        f"穴馬アラート: {best['horse_name']}(オッズ{best['odds_numeric']:.1f}倍) "
+        f"推定3着内率{best[prob_col]:.1f}%"
+    )
+
+
 def _precision_at_k(valid_df: pd.DataFrame, score_col: str, k: int = 3) -> float:
     """Of the model's top-k predicted horses per race, what fraction actually
     finished in the top 3? A business-relevant complement to NDCG."""
