@@ -43,14 +43,19 @@ def fetch_result_with_retry(scraper: PoliteScraper, race_id: str, retries: int =
     return None
 
 
-def build_fuku3_strategies(top6: list) -> dict:
+def build_fuku3_strategies(top8: list) -> dict:
+    top6 = top8[:6]
     axis1, axis2, rest4 = top6[0], top6[1], top6[2:6]
     rest5 = top6[1:6]
+    rest7 = top8[1:8]
     return {
         "straight_top3": [top6[:3]],
-        "nagashi1(軸1頭)": [[axis1] + list(c) for c in itertools.combinations(rest5, 2)],
-        "nagashi2(軸2頭)": [[axis1, axis2, p] for p in rest4],
+        "nagashi1(軸1頭・6頭中)": [[axis1] + list(c) for c in itertools.combinations(rest5, 2)],
+        "nagashi2(軸2頭・6頭中)": [[axis1, axis2, p] for p in rest4],
         "box6": [list(c) for c in itertools.combinations(top6, 3)],
+        "box7": [list(c) for c in itertools.combinations(top8[:7], 3)],
+        "box8": [list(c) for c in itertools.combinations(top8, 3)],
+        "nagashi1(軸1頭・8頭中)": [[axis1] + list(c) for c in itertools.combinations(rest7, 2)],
     }
 
 
@@ -77,9 +82,9 @@ def evaluate_split(fit_df: pd.DataFrame, feature_columns: list, seed: int, scrap
     rows = []
     for race_id, race_rows in valid_df.groupby("race_id"):
         ranked = race_rows.sort_values("score", ascending=False)
-        if len(ranked) < 6:
+        if len(ranked) < 8:
             continue
-        top6 = [str(int(u)) for u in ranked.head(6)["umaban"]]
+        top8 = [str(int(u)) for u in ranked.head(8)["umaban"]]
 
         result = fetch_result_with_retry(scraper, race_id)
         if result is None:
@@ -88,7 +93,7 @@ def evaluate_split(fit_df: pd.DataFrame, feature_columns: list, seed: int, scrap
         if not payout:
             continue
 
-        strategies = build_fuku3_strategies(top6)
+        strategies = build_fuku3_strategies(top8)
         row = {"race_id": race_id, "seed": seed}
         for name, combos in strategies.items():
             bet = len(combos) * unit
@@ -140,7 +145,10 @@ def main() -> None:
         combined.to_csv(args.out, index=False)
 
     print(f"\n=== 3連複 買い方比較 (n={len(combined)} races, {len(seeds)}シードプール) ===")
-    names = ["straight_top3", "nagashi1(軸1頭)", "nagashi2(軸2頭)", "box6"]
+    names = [
+        "straight_top3", "nagashi1(軸1頭・6頭中)", "nagashi2(軸2頭・6頭中)",
+        "box6", "box7", "box8", "nagashi1(軸1頭・8頭中)",
+    ]
     print(f"{'strategy':>18s} {'bet':>10s} {'return':>10s} {'ROI':>8s} {'的中数':>6s}")
     for name in names:
         bet = combined[f"{name}_bet"].sum()
