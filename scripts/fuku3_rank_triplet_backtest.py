@@ -26,8 +26,6 @@ from keiba_ai.model import train_model  # noqa: E402
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig  # noqa: E402
 
 MARKET_FEATURE_COLUMNS = {"popularity_numeric", "odds_numeric"}
-N_RANKS = 6
-TRIPLETS = list(itertools.combinations(range(1, N_RANKS + 1), 3))
 
 
 def fetch_result_with_retry(scraper: PoliteScraper, race_id: str, retries: int = 3, backoff: float = 3.0):
@@ -55,7 +53,7 @@ def triplet_return(umabans: list, payout: dict, unit: int) -> int:
     return 0
 
 
-def evaluate_split(fit_df: pd.DataFrame, feature_columns: list, seed: int, scraper: PoliteScraper, unit: int) -> pd.DataFrame:
+def evaluate_split(fit_df: pd.DataFrame, feature_columns: list, seed: int, scraper: PoliteScraper, unit: int, n_ranks: int, triplets: list) -> pd.DataFrame:
     splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
     _, valid_idx = next(splitter.split(fit_df, fit_df["relevance"], groups=fit_df["race_id"]))
     valid_df = fit_df.iloc[valid_idx].copy()
@@ -66,9 +64,9 @@ def evaluate_split(fit_df: pd.DataFrame, feature_columns: list, seed: int, scrap
     rows = []
     for race_id, race_rows in valid_df.groupby("race_id"):
         ranked = race_rows.sort_values("score", ascending=False)
-        if len(ranked) < N_RANKS:
+        if len(ranked) < n_ranks:
             continue
-        top = [str(int(u)) for u in ranked.head(N_RANKS)["umaban"]]
+        top = [str(int(u)) for u in ranked.head(n_ranks)["umaban"]]
 
         result = fetch_result_with_retry(scraper, race_id)
         if result is None:
@@ -78,7 +76,7 @@ def evaluate_split(fit_df: pd.DataFrame, feature_columns: list, seed: int, scrap
             continue
 
         row = {"race_id": race_id, "seed": seed}
-        for i, j, k in TRIPLETS:
+        for i, j, k in triplets:
             ret = triplet_return([top[i - 1], top[j - 1], top[k - 1]], payout, unit)
             row[f"t_{i}_{j}_{k}"] = ret
         rows.append(row)
@@ -91,11 +89,14 @@ def main() -> None:
     parser.add_argument("--oikiri", default="data/oikiri.csv")
     parser.add_argument("--unit", type=int, default=100)
     parser.add_argument("--seeds", default="1,2,3,4,5,99")
+    parser.add_argument("--n-ranks", type=int, default=6, help="pool the top N predicted ranks (C(N,3) triplets)")
     parser.add_argument("--min-interval", type=float, default=1.5)
     parser.add_argument("--cache-dir", default="data/cache/netkeiba")
     parser.add_argument("--contact", default="set-your-email-here")
     parser.add_argument("--out")
     args = parser.parse_args()
+
+    triplets = list(itertools.combinations(range(1, args.n_ranks + 1), 3))
 
     raw = read_race_csv(args.data)
     oikiri_path = Path(args.oikiri)
@@ -117,7 +118,7 @@ def main() -> None:
     seeds = [int(s) for s in args.seeds.split(",")]
     all_dfs = []
     for seed in seeds:
-        df = evaluate_split(fit_df, feature_columns, seed, scraper, args.unit)
+        df = evaluate_split(fit_df, feature_columns, seed, scraper, args.unit, args.n_ranks, triplets)
         all_dfs.append(df)
         print(f"seed {seed}: {len(df)} races processed")
 
@@ -127,9 +128,9 @@ def main() -> None:
 
     n = len(combined)
     unit_bet = n * args.unit
-    print(f"\n=== 指数順位トリプレット別 3連複ROI (n={n} races, {len(seeds)}シードプール, 各{args.unit}円均一) ===")
+    print(f"\n=== 指数順位トリプレット別 3連複ROI (上位{args.n_ranks}頭中, n={n} races, {len(seeds)}シードプール, 各{args.unit}円均一) ===")
     results = []
-    for i, j, k in TRIPLETS:
+    for i, j, k in triplets:
         ret = combined[f"t_{i}_{j}_{k}"].sum()
         roi = ret / unit_bet * 100
         hit = (combined[f"t_{i}_{j}_{k}"] > 0).sum()
