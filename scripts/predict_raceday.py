@@ -52,6 +52,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--date", required=True, help="YYYYMMDD")
     parser.add_argument("--dirt-only", action="store_true", help="skip turf races")
+    parser.add_argument("--turf-only", action="store_true",
+                         help="skip dirt races -- pair with --model models/model_turf.joblib. "
+                              "See README's turf-model caveats before trusting this for real bets. "
+                              "Mutually exclusive with --dirt-only.")
     parser.add_argument("--model", default="models/model_dirt.joblib")
     parser.add_argument("--history", default="models/history.csv")
     parser.add_argument("--pedigree", default="data/pedigree.csv",
@@ -63,6 +67,8 @@ def main() -> None:
     parser.add_argument("--top-n", type=int, default=5, help="how many horses to show per race")
     parser.add_argument("--out", help="optional path to also save the full report as CSV")
     args = parser.parse_args()
+    if args.dirt_only and args.turf_only:
+        parser.error("--dirt-only and --turf-only are mutually exclusive")
 
     scraper = PoliteScraper(
         ScraperConfig(
@@ -98,6 +104,8 @@ def main() -> None:
         meta = parsed["meta"]
         surface = meta.get("surface", "")
         if args.dirt_only and surface != "ダート":
+            continue
+        if args.turf_only and surface != "芝":
             continue
 
         shutuba = pd.DataFrame(parsed["entries"])

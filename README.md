@@ -175,9 +175,13 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
   `groupby + cumsum` で各レースより前のデータのみから計算し、未来の結果が
   紛れ込まないようにしています。予測時(`build_prediction_frame`)には、その
   馬/騎手の**直近レースの結果まで織り込んだ**最新の統計を使います。
-- **ダート特化特徴量**: 上記に加え、`horse_dirt_*` / `jockey_dirt_*`
-  (ダートレースのみに絞った出走数・勝率・複勝率・平均着順)を持ちます。
-  芝レースを挟んでも正しくスキップされ、その馬/騎手の直近の**ダートでの**
+- **サーフェス特化特徴量**: 上記に加え、`horse_dirt_*` / `jockey_dirt_*`
+  (ダートレースのみに絞った出走数・勝率・複勝率・平均着順)と、全く同じ
+  構造の `horse_turf_*` / `jockey_turf_*`(芝限定版)の両方を常に計算します
+  (`build_training_frame`/`build_prediction_frame` はモデルの種類によらず
+  両サーフェス分を計算し、学習・予測時にどちらを実際に使うかは
+  `KeibaModel.feature_columns` 側で決まります)。他方のサーフェスのレースを
+  挟んでも正しくスキップされ、その馬/騎手の直近の**そのサーフェスでの**
   実績のみを反映します(`tests/test_features.py` で検証)。芝適性とダート
   適性は必ずしも一致しないため、両者を区別して学習させています。
 - **距離帯・コースバイアス特徴量**: `distance_band`(短距離≦1400m/マイル
@@ -195,16 +199,19 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
 - **調教師(trainer)特徴量**: `trainer_runs_before` / `trainer_win_rate_before`
   / `trainer_top3_rate_before`(全体・ダート限定の両方)。jockey_*と全く同じ
   パターンで、調教師IDごとにリークなし展開集計しています。
-- **馬×条件別のダート実績**: `horse_dirt_track_condition_*` /
-  `horse_dirt_place_*` / `horse_dirt_distance_*`。`course_waku_bias_*`が
-  「その条件でのフィールド全体の傾向」であるのに対し、こちらは**その馬自身
-  が今回と同じ馬場状態・開催場所・距離のダート戦でどう走ってきたか**を
-  リークなし展開集計したものです(いずれもダート戦に限定。`horse_dirt_*`
-  同様、芝適性がそのまま転用できるとは限らないため)。学習時と同じ手法で
-  `horse_dirt_distance_avg_rank_before`が特徴量重要度で上位10位以内に入る
-  など、実際にモデルの予測に活用されていることを確認済みです。
-  `track_condition`は出馬表発表直後は未確定(空欄)のことが多く、その場合は
-  `popularity_numeric`/`odds_numeric`と同様に欠損(NaN)として扱われます。
+- **馬×条件別のサーフェス実績**: `horse_dirt_track_condition_*` /
+  `horse_dirt_place_*` / `horse_dirt_distance_*`、および同構造の
+  `horse_turf_track_condition_*` / `horse_turf_place_*` /
+  `horse_turf_distance_*`。`course_waku_bias_*`が「その条件でのフィールド
+  全体の傾向」であるのに対し、こちらは**その馬自身が今回と同じ馬場状態・
+  開催場所・距離の(同じサーフェスの)レースでどう走ってきたか**を
+  リークなし展開集計したものです(それぞれ同一サーフェスの戦績に限定。
+  芝適性とダート適性がそのまま転用できるとは限らないため)。学習時と同じ
+  手法で`horse_dirt_distance_avg_rank_before`が特徴量重要度で上位10位以内に
+  入るなど、実際にモデルの予測に活用されていることを確認済みです(ダート
+  モデルでの確認。芝モデルでの重要度は未検証)。`track_condition`は出馬表
+  発表直後は未確定(空欄)のことが多く、その場合は`popularity_numeric`/
+  `odds_numeric`と同様に欠損(NaN)として扱われます。
 - **追切評価(training_grade)**: netkeibaが公開している調教(追切)の
   A〜E評価をカテゴリ特徴量として使用します。生の調教タイムはnetkeiba
   プレミアム会員限定(1レースにつき3頭のみ無料プレビュー)で、しかも
@@ -311,6 +318,50 @@ df.drop_duplicates(subset=['race_id','umaban']).to_csv('data/jra_results.csv', i
   でライブ出馬表と結合して初めて発覚)。`keiba_ai.io.read_race_csv`で
   ID列を明示的に文字列型として読み込むよう修正し、全CSV読み込み箇所を
   これに統一しました(`tests/test_io.py`で回帰テスト済み)。
+
+## 芝モデルについて
+
+このプロジェクトは長らくダート専用で運用してきましたが、
+`data/jra_results.csv`には芝レースも元々101,958件(ダートは100,272件)
+収集済みだったため、ダートと全く同じ特徴量設計・学習パイプラインを芝にも
+適用した`models/model_turf.joblib`を用意しました。
+
+```bash
+# 芝限定でモデルを学習(TURF_FEATURE_COLUMNS = horse_turf_*/jockey_turf_*等、
+# ダート版と対になる特徴量セットを使用。--model-outを省略すると自動的に
+# models/model_turf.joblib に保存される)
+python scripts/train_model.py --data data/jra_results.csv --turf-only \
+    --model-out models/model_turf.joblib --history-out models/history.csv
+
+# 予測(--turf-onlyでその日の芝レースだけに絞り込み)
+python scripts/predict_raceday.py --date 20250111 --turf-only \
+    --model models/model_turf.joblib --history models/history.csv
+```
+
+### 検証結果
+
+- **held-out分割の指標**: 6シード(1,2,3,4,5,99)でのプール結果は
+  `ndcg@6 = 0.587±0.007`、`precision@3 = 0.470±0.006`、`recall@6 = 0.744±0.005`
+  で、同じ6シードでのダートモデル(`ndcg@6 = 0.577±0.005`等)と同等かやや
+  上回る水準でした(`scripts/turf_model_robustness_check.py`)。1回の分割の
+  数字ではなく複数シードで安定していることを確認済みです。
+- **実払戻ROIバックテスト**: `scripts/turf_model_roi_backtest.py`で実施中
+  (複数シード×実際の払戻データを使った検証。完了後にこのセクションを
+  実測値で更新予定)。
+- **既知の制約 — 追切評価が効かない**: `data/oikiri.csv`はこれまでダート
+  レースのみを対象にスクレイピングしており(`scrape_oikiri.py`の実行対象が
+  ダートに限定されていたため)、芝レースの`training_grade`は現状
+  **全件欠損**です。`CategoryEncoder`はこれを「学習時に一度も見ていない
+  カテゴリ」として扱い、学習時に
+  `LightGBM [Warning] Met negative value in categorical features` という
+  警告が出ます(エラーではなく、実質「常に同じ値」として無視される動作)。
+  芝でも追切評価を活用したい場合は、`scrape_oikiri.py`を芝レースにも対象を
+  広げて再実行する必要があります。
+- **未実施**: ダートモデルで何日もかけて行った、ライブ予測での日次トラッキング
+  (note/X投稿を使った継続検証)はまだ一度も芝で行っていません。上記の
+  バックテストは「過去の確定済みレースを後から評価した」結果であり、
+  本番の出馬表予測(オッズ未確定・追切評価なしの状態)でどう振る舞うかは
+  別途、日を重ねて確認する必要があります。
 
 ## 馬券戦略の検証(実払戻データでのバックテスト)
 

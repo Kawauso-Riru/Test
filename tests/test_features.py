@@ -1,6 +1,6 @@
 import pandas as pd
 
-from keiba_ai.features import build_prediction_frame, build_training_frame
+from keiba_ai.features import ALL_FEATURE_COLUMNS, TURF_FEATURE_COLUMNS, build_prediction_frame, build_training_frame
 
 
 def _sample_raw() -> pd.DataFrame:
@@ -71,6 +71,75 @@ def test_dirt_only_history_ignores_interleaved_turf_races():
     assert r3["horse_dirt_runs_before"] == 1
     assert r3["horse_dirt_win_rate_before"] == 1.0
     assert r3["horse_dirt_avg_rank_before"] == 1.0
+
+
+def test_turf_only_history_ignores_interleaved_dirt_races():
+    """Mirror image of test_dirt_only_history_ignores_interleaved_turf_races:
+    a turf-specific _before stat must skip interleaved dirt starts, not
+    inherit or be diluted by them -- the same leak-free-per-surface guarantee
+    TURF_FEATURE_COLUMNS depends on."""
+    rows = [
+        dict(
+            race_id="r1", date="2023-01-01", place="東京", surface="芝", distance=2000,
+            track_condition="良", waku=1, umaban=1, horse_id="h1", horse_name="H1",
+            sex_age="牡4", kinryo=57.0, jockey_id="j1", jockey="J1", trainer_id="t1",
+            trainer="T1", horse_weight="480(+2)", odds=2.0, popularity=1, rank=1, last_3f=35.0,
+        ),
+        dict(
+            # h1's first-ever DIRT race, interleaved between two turf races.
+            race_id="r2", date="2023-01-08", place="中山", surface="ダート", distance=1800,
+            track_condition="稍重", waku=1, umaban=1, horse_id="h1", horse_name="H1",
+            sex_age="牡4", kinryo=57.0, jockey_id="j1", jockey="J1", trainer_id="t1",
+            trainer="T1", horse_weight="482(+2)", odds=1.8, popularity=1, rank=4, last_3f=36.0,
+        ),
+        dict(
+            # h1's second-ever turf race.
+            race_id="r3", date="2023-01-15", place="東京", surface="芝", distance=2000,
+            track_condition="良", waku=1, umaban=1, horse_id="h1", horse_name="H1",
+            sex_age="牡4", kinryo=57.0, jockey_id="j1", jockey="J1", trainer_id="t1",
+            trainer="T1", horse_weight="480(-2)", odds=2.5, popularity=1, rank=2, last_3f=36.5,
+        ),
+    ]
+    df = build_training_frame(pd.DataFrame(rows))
+
+    r2 = df[(df["horse_id"] == "h1") & (df["race_id"] == "r2")].iloc[0]
+    assert r2["horse_runs_before"] == 1           # overall: counts the turf race
+    assert r2["horse_dirt_runs_before"] == 0      # dirt-only: no prior dirt starts yet
+    # horse_turf_* is computed only on turf rows (r2 itself is dirt), same as
+    # horse_dirt_* is NaN on turf rows in the dirt-side test above -- not
+    # checked here since r2 isn't a turf row.
+
+    r3 = df[(df["horse_id"] == "h1") & (df["race_id"] == "r3")].iloc[0]
+    assert r3["horse_turf_runs_before"] == 1      # still just the r1 win -- r2 (dirt) excluded
+    assert r3["horse_turf_win_rate_before"] == 1.0
+    assert r3["horse_turf_avg_rank_before"] == 1.0
+
+
+def test_turf_and_dirt_feature_columns_both_populated_after_refactor():
+    """build_training_frame/build_prediction_frame compute both surfaces'
+    conditional history in parallel (see TURF_FEATURE_COLUMNS), regardless of
+    which model will eventually consume the frame -- so every column in both
+    ALL_FEATURE_COLUMNS and TURF_FEATURE_COLUMNS must exist in the output of
+    each, with no KeyError, on ordinary mixed-surface data."""
+    training_df = build_training_frame(_sample_raw())
+    for col in set(ALL_FEATURE_COLUMNS) | set(TURF_FEATURE_COLUMNS):
+        assert col in training_df.columns, f"missing from build_training_frame: {col}"
+
+    shutuba = pd.DataFrame([
+        dict(horse_id="h1", jockey_id="j1", umaban=1, waku=1, horse_name="H1", jockey="J1",
+             sex_age="牡4", kinryo=57.0, horse_weight="480(0)", surface="芝", distance=2000,
+             track_condition="良", place="東京"),
+    ])
+    pred = build_prediction_frame(shutuba, training_df)
+    for col in set(ALL_FEATURE_COLUMNS) | set(TURF_FEATURE_COLUMNS):
+        assert col in pred.columns, f"missing from build_prediction_frame: {col}"
+
+    # h1's most recent turf race (r1 in _sample_raw, a win) must roll forward
+    # into horse_turf_* exactly like horse_dirt_* already does for dirt (see
+    # test_prediction_frame_includes_most_recent_finished_race).
+    row = pred.iloc[0]
+    assert row["horse_turf_runs_before"] == 1
+    assert row["horse_turf_win_rate_before"] == 1.0
 
 
 def test_sex_age_and_weight_parsing():

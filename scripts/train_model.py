@@ -8,10 +8,14 @@ popularity, rank, ...). `python scripts/generate_demo_data.py` (synthetic)
 or `python scripts/scrape_jra_dirt_results.py` (real JRA data) produce a
 compatible file.
 
-Use --dirt-only to fit the model on dirt races only (recommended for a
-dirt-specialized model) -- turf races still contribute to each horse's/
-jockey's history features either way, so pass the full mixed-surface CSV
-regardless; only the *fitting* target rows are filtered.
+Use --dirt-only (or --turf-only) to fit the model on one surface only
+(recommended -- see README's turf-model caveats before trusting --turf-only
+for real bets) -- races on the other surface still contribute to each
+horse's/jockey's history features either way (build_training_frame computes
+both horse_dirt_*/horse_turf_* in parallel regardless of this flag), so pass
+the full mixed-surface CSV regardless; only the *fitting* target rows are
+filtered, and only the matching surface's feature_columns are used
+(ALL_FEATURE_COLUMNS for --dirt-only, TURF_FEATURE_COLUMNS for --turf-only).
 
 By default, market features (popularity_numeric/odds_numeric -- the horse's
 final betting popularity/win odds) are EXCLUDED. They're by far the single
@@ -32,7 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from keiba_ai.features import ALL_FEATURE_COLUMNS, build_training_frame  # noqa: E402
+from keiba_ai.features import ALL_FEATURE_COLUMNS, TURF_FEATURE_COLUMNS, build_training_frame  # noqa: E402
 from keiba_ai.io import read_race_csv  # noqa: E402
 from keiba_ai.model import train_model  # noqa: E402
 
@@ -49,12 +53,24 @@ def main() -> None:
                          help="optional sire/damsire CSV from scripts/scrape_pedigree.py; "
                               "merged in (by horse_id) as the sire_id/damsire_id features if the file exists")
     parser.add_argument("--dirt-only", action="store_true", help="fit only on dirt (ダート) races")
+    parser.add_argument("--turf-only", action="store_true",
+                         help="fit only on turf (芝) races, using TURF_FEATURE_COLUMNS "
+                              "(horse_turf_*/jockey_turf_*/trainer_turf_* instead of the "
+                              "horse_dirt_*/jockey_dirt_*/trainer_dirt_* used by --dirt-only). "
+                              "Mutually exclusive with --dirt-only.")
     parser.add_argument("--include-market-features", action="store_true",
                          help="keep popularity/odds as features (see caveat above)")
     parser.add_argument("--model-out", default="models/model_dirt.joblib")
     parser.add_argument("--history-out", default="models/history.csv")
     parser.add_argument("--num-boost-round", type=int, default=300)
     args = parser.parse_args()
+    if args.dirt_only and args.turf_only:
+        parser.error("--dirt-only and --turf-only are mutually exclusive")
+    if args.turf_only and args.model_out == "models/model_dirt.joblib":
+        # --model-out's default name is dirt-specific; --turf-only without an
+        # explicit --model-out would otherwise silently overwrite the dirt
+        # model instead of producing a usable turf one.
+        args.model_out = "models/model_turf.joblib"
 
     raw = read_race_csv(args.data)
     oikiri_path = Path(args.oikiri)
@@ -69,13 +85,20 @@ def main() -> None:
         print(f"merged sire_id: {raw['sire_id'].notna().sum()}/{len(raw)} rows have a sire")
     training_df = build_training_frame(raw)
 
-    fit_df = training_df[training_df["is_dirt"]] if args.dirt_only else training_df
-    print(f"fitting on {len(fit_df)} entries ({fit_df['race_id'].nunique()} races)"
-          + (" [dirt only]" if args.dirt_only else ""))
+    if args.turf_only:
+        fit_df = training_df[~training_df["is_dirt"]]
+        surface_label = " [turf only]"
+    elif args.dirt_only:
+        fit_df = training_df[training_df["is_dirt"]]
+        surface_label = " [dirt only]"
+    else:
+        fit_df = training_df
+        surface_label = ""
+    print(f"fitting on {len(fit_df)} entries ({fit_df['race_id'].nunique()} races){surface_label}")
 
-    feature_columns = ALL_FEATURE_COLUMNS
+    feature_columns = TURF_FEATURE_COLUMNS if args.turf_only else ALL_FEATURE_COLUMNS
     if not args.include_market_features:
-        feature_columns = [c for c in ALL_FEATURE_COLUMNS if c not in MARKET_FEATURE_COLUMNS]
+        feature_columns = [c for c in feature_columns if c not in MARKET_FEATURE_COLUMNS]
         print("excluding market features:", sorted(MARKET_FEATURE_COLUMNS))
 
     model = train_model(fit_df, num_boost_round=args.num_boost_round, feature_columns=feature_columns)

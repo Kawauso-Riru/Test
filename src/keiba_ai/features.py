@@ -12,7 +12,7 @@ import re
 import numpy as np
 import pandas as pd
 
-NUMERIC_FEATURE_COLUMNS = [
+_SURFACE_AGNOSTIC_NUMERIC_COLUMNS = [
     "kinryo",
     "waku",
     "umaban",
@@ -31,16 +31,6 @@ NUMERIC_FEATURE_COLUMNS = [
     "jockey_runs_before",
     "jockey_win_rate_before",
     "jockey_top3_rate_before",
-    # Surface-specific (currently: dirt-only) history -- distinct from the
-    # surface-agnostic stats above because dirt aptitude doesn't transfer
-    # 1:1 from turf form. NaN for a horse/jockey with no prior dirt starts.
-    "horse_dirt_runs_before",
-    "horse_dirt_win_rate_before",
-    "horse_dirt_top3_rate_before",
-    "horse_dirt_avg_rank_before",
-    "jockey_dirt_runs_before",
-    "jockey_dirt_win_rate_before",
-    "jockey_dirt_top3_rate_before",
     # Course/post-position bias: the historical win rate for this exact
     # (course, surface, distance band, waku bracket) combination, independent
     # of which horse or jockey is running -- captures track quirks like "低い
@@ -59,7 +49,6 @@ NUMERIC_FEATURE_COLUMNS = [
     # continuous feature combined with place/surface/distance_band directly,
     # without needing a hand-built course-x-style aggregate.
     "horse_early_position_ratio_before",
-    "horse_dirt_early_position_ratio_before",
     # This horse's historical closing-sprint speed (上がり3F, the final
     # ~600m split), averaged the same leak-free way as running style above.
     # Correlates with finishing rank less strongly than the horse's plain
@@ -68,32 +57,10 @@ NUMERIC_FEATURE_COLUMNS = [
     # horse_early_position_ratio_before, only ever the horse's *own* past
     # average -- this race's own last_3f is only known after it finishes.
     "horse_avg_last_3f_before",
-    "horse_dirt_avg_last_3f_before",
-    # This horse's own dirt-race history conditioned on a specific race
-    # attribute matching today's race -- distinct from course_waku_bias_*
-    # (which is a field-wide average, not specific to this horse) and from
-    # horse_dirt_* above (which averages over every distance/course/going).
-    # Computed on dirt starts only, like horse_dirt_* itself, since aptitude
-    # for a given going/course/distance doesn't transfer 1:1 from turf.
-    "horse_dirt_track_condition_runs_before",
-    "horse_dirt_track_condition_win_rate_before",
-    "horse_dirt_track_condition_top3_rate_before",
-    "horse_dirt_track_condition_avg_rank_before",
-    "horse_dirt_place_runs_before",
-    "horse_dirt_place_win_rate_before",
-    "horse_dirt_place_top3_rate_before",
-    "horse_dirt_place_avg_rank_before",
-    "horse_dirt_distance_runs_before",
-    "horse_dirt_distance_win_rate_before",
-    "horse_dirt_distance_top3_rate_before",
-    "horse_dirt_distance_avg_rank_before",
-    # Trainer history, mirroring jockey_*/jockey_dirt_* exactly.
+    # Trainer history, mirroring jockey_* exactly.
     "trainer_runs_before",
     "trainer_win_rate_before",
     "trainer_top3_rate_before",
-    "trainer_dirt_runs_before",
-    "trainer_dirt_win_rate_before",
-    "trainer_dirt_top3_rate_before",
     # Market consensus (popularity rank / win odds) at race time. Legitimate
     # pre-race information (betting closes at post time, not after), and
     # historically one of the single strongest signals in horse racing --
@@ -103,6 +70,58 @@ NUMERIC_FEATURE_COLUMNS = [
     "popularity_numeric",
     "odds_numeric",
 ]
+
+
+def _surface_specific_numeric_columns(prefix: str) -> list:
+    """Column names for one surface's (dirt or turf) conditional history
+    block -- distinct from the surface-agnostic stats above because aptitude
+    for one surface doesn't transfer 1:1 from the other. NaN for a horse/
+    jockey/trainer with no prior starts on that surface. Mirrors
+    _SURFACE_AGNOSTIC_NUMERIC_COLUMNS' horse_early_position_ratio_before/
+    horse_avg_last_3f_before, plus this horse's own history conditioned on a
+    specific race attribute (track condition / venue / distance) matching
+    today's race -- distinct from course_waku_bias_* (a field-wide average,
+    not specific to this horse) and from horse_{prefix}_* (which averages
+    over every distance/course/going on that surface)."""
+    return [
+        f"horse_{prefix}_runs_before",
+        f"horse_{prefix}_win_rate_before",
+        f"horse_{prefix}_top3_rate_before",
+        f"horse_{prefix}_avg_rank_before",
+        f"jockey_{prefix}_runs_before",
+        f"jockey_{prefix}_win_rate_before",
+        f"jockey_{prefix}_top3_rate_before",
+        f"horse_{prefix}_early_position_ratio_before",
+        f"horse_{prefix}_avg_last_3f_before",
+        f"horse_{prefix}_track_condition_runs_before",
+        f"horse_{prefix}_track_condition_win_rate_before",
+        f"horse_{prefix}_track_condition_top3_rate_before",
+        f"horse_{prefix}_track_condition_avg_rank_before",
+        f"horse_{prefix}_place_runs_before",
+        f"horse_{prefix}_place_win_rate_before",
+        f"horse_{prefix}_place_top3_rate_before",
+        f"horse_{prefix}_place_avg_rank_before",
+        f"horse_{prefix}_distance_runs_before",
+        f"horse_{prefix}_distance_win_rate_before",
+        f"horse_{prefix}_distance_top3_rate_before",
+        f"horse_{prefix}_distance_avg_rank_before",
+        f"trainer_{prefix}_runs_before",
+        f"trainer_{prefix}_win_rate_before",
+        f"trainer_{prefix}_top3_rate_before",
+    ]
+
+
+# Each surface gets its own conditional-history block (see
+# _surface_specific_numeric_columns), computed from that surface's starts
+# only. NUMERIC_FEATURE_COLUMNS/ALL_FEATURE_COLUMNS keep their original
+# names and contents (agnostic + dirt) for backward compatibility with
+# models/model_dirt.joblib and any code that already imports them; the
+# dirt-trained model's feature_columns is still exactly this list.
+_DIRT_NUMERIC_COLUMNS = _surface_specific_numeric_columns("dirt")
+_TURF_NUMERIC_COLUMNS = _surface_specific_numeric_columns("turf")
+
+NUMERIC_FEATURE_COLUMNS = _SURFACE_AGNOSTIC_NUMERIC_COLUMNS + _DIRT_NUMERIC_COLUMNS
+TURF_NUMERIC_FEATURE_COLUMNS = _SURFACE_AGNOSTIC_NUMERIC_COLUMNS + _TURF_NUMERIC_COLUMNS
 
 CATEGORICAL_FEATURE_COLUMNS = [
     "sex", "surface", "track_condition", "place", "distance_band",
@@ -141,6 +160,15 @@ CATEGORICAL_FEATURE_COLUMNS = [
 # win/top3 rate instead of a raw ID), just not used as-is.
 
 ALL_FEATURE_COLUMNS = NUMERIC_FEATURE_COLUMNS + CATEGORICAL_FEATURE_COLUMNS
+
+# Turf counterpart of ALL_FEATURE_COLUMNS -- same surface-agnostic base plus
+# the turf_ prefixed conditional-history block instead of dirt_. Pass this as
+# train_model()'s feature_columns (with --turf-only) to train a turf model;
+# the resulting KeibaModel persists it so predict()/predict_top3_probability()
+# automatically select the right columns later, no caller-side branching
+# needed. See _surface_specific_numeric_columns for why these aren't just one
+# shared surface-generic block.
+TURF_FEATURE_COLUMNS = TURF_NUMERIC_FEATURE_COLUMNS + CATEGORICAL_FEATURE_COLUMNS
 
 # Rough sprint/mile/long buckets used for both the distance_band categorical
 # feature and for grouping the course/post-position bias stats.
@@ -398,32 +426,40 @@ def build_training_frame(raw: pd.DataFrame) -> pd.DataFrame:
     trainer_stats = _expanding_entity_stats(df, "trainer_id", "trainer")
     df = df.join(horse_stats).join(jockey_stats).join(trainer_stats)
 
-    # Dirt-only history: same expanding logic, restricted to the horse's/
-    # jockey's/trainer's prior dirt starts (interleaved turf races are
-    # skipped, not just zeroed out) so these reflect dirt-specific form.
+    # Surface-only history: same expanding logic, restricted to the horse's/
+    # jockey's/trainer's prior starts on that one surface (races on the other
+    # surface are skipped, not just zeroed out) so these reflect surface-
+    # specific form. Dirt and turf are computed in parallel (not just dirt)
+    # so either a dirt- or turf-trained model can be built from the same
+    # history frame -- see TURF_FEATURE_COLUMNS.
     dirt_df = df[df["is_dirt"]]
-    horse_dirt_stats = _expanding_entity_stats(dirt_df, "horse_id", "horse_dirt")
-    jockey_dirt_stats = _expanding_entity_stats(dirt_df, "jockey_id", "jockey_dirt")
-    trainer_dirt_stats = _expanding_entity_stats(dirt_df, "trainer_id", "trainer_dirt")
-    df = df.join(horse_dirt_stats).join(jockey_dirt_stats).join(trainer_dirt_stats)
+    turf_df = df[~df["is_dirt"]]
+    for surface_df, prefix in ((dirt_df, "dirt"), (turf_df, "turf")):
+        horse_stats = _expanding_entity_stats(surface_df, "horse_id", f"horse_{prefix}")
+        jockey_stats = _expanding_entity_stats(surface_df, "jockey_id", f"jockey_{prefix}")
+        trainer_stats = _expanding_entity_stats(surface_df, "trainer_id", f"trainer_{prefix}")
+        df = df.join(horse_stats).join(jockey_stats).join(trainer_stats)
 
     course_bias_stats = _expanding_entity_stats(df, COURSE_BIAS_GROUP_COLUMNS, "course_waku_bias")
     df = df.join(course_bias_stats)
 
-    # This horse's own dirt-form conditioned on track condition / venue /
-    # distance matching today's race (see NUMERIC_FEATURE_COLUMNS comment).
-    horse_dirt_tc_stats = _expanding_entity_stats(dirt_df, ["horse_id", "track_condition"], "horse_dirt_track_condition")
-    horse_dirt_place_stats = _expanding_entity_stats(dirt_df, ["horse_id", "place"], "horse_dirt_place")
-    horse_dirt_distance_stats = _expanding_entity_stats(dirt_df, ["horse_id", "distance"], "horse_dirt_distance")
-    df = df.join(horse_dirt_tc_stats).join(horse_dirt_place_stats).join(horse_dirt_distance_stats)
+    # This horse's own surface-form conditioned on track condition / venue /
+    # distance matching today's race (see _surface_specific_numeric_columns).
+    for surface_df, prefix in ((dirt_df, "dirt"), (turf_df, "turf")):
+        horse_tc_stats = _expanding_entity_stats(surface_df, ["horse_id", "track_condition"], f"horse_{prefix}_track_condition")
+        horse_place_stats = _expanding_entity_stats(surface_df, ["horse_id", "place"], f"horse_{prefix}_place")
+        horse_distance_stats = _expanding_entity_stats(surface_df, ["horse_id", "distance"], f"horse_{prefix}_distance")
+        df = df.join(horse_tc_stats).join(horse_place_stats).join(horse_distance_stats)
 
     horse_style = _expanding_mean(df, "horse_id", "early_position_ratio", "horse_early_position_ratio")
-    horse_dirt_style = _expanding_mean(dirt_df, "horse_id", "early_position_ratio", "horse_dirt_early_position_ratio")
-    df = df.join(horse_style).join(horse_dirt_style)
-
     horse_last3f = _expanding_mean(df, "horse_id", "last_3f_numeric", "horse_avg_last_3f")
-    horse_dirt_last3f = _expanding_mean(dirt_df, "horse_id", "last_3f_numeric", "horse_dirt_avg_last_3f")
-    return df.join(horse_last3f).join(horse_dirt_last3f)
+    df = df.join(horse_style).join(horse_last3f)
+
+    for surface_df, prefix in ((dirt_df, "dirt"), (turf_df, "turf")):
+        horse_surface_style = _expanding_mean(surface_df, "horse_id", "early_position_ratio", f"horse_{prefix}_early_position_ratio")
+        horse_surface_last3f = _expanding_mean(surface_df, "horse_id", "last_3f_numeric", f"horse_{prefix}_avg_last_3f")
+        df = df.join(horse_surface_style).join(horse_surface_last3f)
+    return df
 
 
 def _latest_entity_stats(training_df: pd.DataFrame, entity_col, prefix: str) -> pd.DataFrame:
@@ -493,71 +529,82 @@ def build_prediction_frame(shutuba: pd.DataFrame, training_df: pd.DataFrame) -> 
 
     horse_latest = _latest_entity_stats(training_df, "horse_id", "horse")
     jockey_latest = _latest_entity_stats(training_df, "jockey_id", "jockey")
-
-    # Dirt-specific "latest known" stats come from the horse's/jockey's/
-    # trainer's most recent *dirt* start, not their most recent start overall
-    # -- otherwise one whose last race was on turf would show no dirt history.
-    dirt_history = training_df[training_df["is_dirt"]]
-    horse_dirt_latest = _latest_entity_stats(dirt_history, "horse_id", "horse_dirt")
-    jockey_dirt_latest = _latest_entity_stats(dirt_history, "jockey_id", "jockey_dirt")
-
     course_bias_latest = _latest_entity_stats(training_df, COURSE_BIAS_GROUP_COLUMNS, "course_waku_bias")
-
-    # This horse's most recent dirt run under a matching track condition /
-    # at this venue / at this exact distance -- see build_training_frame.
-    # track_condition is frequently unknown this far ahead of an upcoming
-    # race (blank until race-day morning), same caveat as popularity/odds:
-    # that merge key just won't match and the feature comes back NaN.
-    horse_dirt_tc_latest = _latest_entity_stats(dirt_history, ["horse_id", "track_condition"], "horse_dirt_track_condition")
-    horse_dirt_place_latest = _latest_entity_stats(dirt_history, ["horse_id", "place"], "horse_dirt_place")
-    horse_dirt_distance_latest = _latest_entity_stats(dirt_history, ["horse_id", "distance"], "horse_dirt_distance")
-
     horse_style_latest = _latest_mean(training_df, "horse_id", "horse_early_position_ratio")
-    horse_dirt_style_latest = _latest_mean(dirt_history, "horse_id", "horse_dirt_early_position_ratio")
     horse_last3f_latest = _latest_mean(training_df, "horse_id", "horse_avg_last_3f")
-    horse_dirt_last3f_latest = _latest_mean(dirt_history, "horse_id", "horse_dirt_avg_last_3f")
 
     df = df.merge(horse_latest, on="horse_id", how="left")
     df = df.merge(jockey_latest, on="jockey_id", how="left")
-    df = df.merge(horse_dirt_latest, on="horse_id", how="left")
-    df = df.merge(jockey_dirt_latest, on="jockey_id", how="left")
     df = df.merge(course_bias_latest, on=COURSE_BIAS_GROUP_COLUMNS, how="left")
-    df = df.merge(horse_dirt_tc_latest, on=["horse_id", "track_condition"], how="left")
-    df = df.merge(horse_dirt_place_latest, on=["horse_id", "place"], how="left")
-    df = df.merge(horse_dirt_distance_latest, on=["horse_id", "distance"], how="left")
     df = df.merge(horse_style_latest, on="horse_id", how="left")
-    df = df.merge(horse_dirt_style_latest, on="horse_id", how="left")
     df = df.merge(horse_last3f_latest, on="horse_id", how="left")
-    df = df.merge(horse_dirt_last3f_latest, on="horse_id", how="left")
 
-    # trainer_id isn't always available on every shutuba source, so this is
-    # skipped gracefully (the final NaN-fill loop below covers the columns).
-    if "trainer_id" in df.columns:
-        trainer_latest = _latest_entity_stats(training_df, "trainer_id", "trainer")
-        trainer_dirt_latest = _latest_entity_stats(dirt_history, "trainer_id", "trainer_dirt")
-        df = df.merge(trainer_latest, on="trainer_id", how="left")
-        df = df.merge(trainer_dirt_latest, on="trainer_id", how="left")
-
-    rename = {f"{col}_latest": col for col in (
+    rename_cols = [
         "horse_runs_before", "horse_win_rate_before", "horse_top3_rate_before", "horse_avg_rank_before",
         "jockey_runs_before", "jockey_win_rate_before", "jockey_top3_rate_before",
-        "horse_dirt_runs_before", "horse_dirt_win_rate_before", "horse_dirt_top3_rate_before", "horse_dirt_avg_rank_before",
-        "jockey_dirt_runs_before", "jockey_dirt_win_rate_before", "jockey_dirt_top3_rate_before",
         "course_waku_bias_runs_before", "course_waku_bias_win_rate_before",
         "course_waku_bias_top3_rate_before", "course_waku_bias_avg_rank_before",
-        "horse_dirt_track_condition_runs_before", "horse_dirt_track_condition_win_rate_before",
-        "horse_dirt_track_condition_top3_rate_before", "horse_dirt_track_condition_avg_rank_before",
-        "horse_dirt_place_runs_before", "horse_dirt_place_win_rate_before",
-        "horse_dirt_place_top3_rate_before", "horse_dirt_place_avg_rank_before",
-        "horse_dirt_distance_runs_before", "horse_dirt_distance_win_rate_before",
-        "horse_dirt_distance_top3_rate_before", "horse_dirt_distance_avg_rank_before",
-        "trainer_runs_before", "trainer_win_rate_before", "trainer_top3_rate_before",
-        "trainer_dirt_runs_before", "trainer_dirt_win_rate_before", "trainer_dirt_top3_rate_before",
-    )}
-    df = df.rename(columns=rename)
+    ]
+
+    # Surface-specific "latest known" stats come from the horse's/jockey's/
+    # trainer's most recent start *on that surface*, not their most recent
+    # start overall -- otherwise one whose last race was on the other surface
+    # would show no history here. Dirt and turf computed in parallel so the
+    # same prediction frame serves either a dirt- or turf-trained model (each
+    # just selects its own feature_columns subset -- see KeibaModel.predict).
+    for surface, prefix in (("ダート", "dirt"), ("芝", "turf")):
+        surface_history = training_df[training_df["surface"] == surface]
+        horse_surface_latest = _latest_entity_stats(surface_history, "horse_id", f"horse_{prefix}")
+        jockey_surface_latest = _latest_entity_stats(surface_history, "jockey_id", f"jockey_{prefix}")
+
+        # This horse's most recent run (on this surface) under a matching
+        # track condition / at this venue / at this exact distance -- see
+        # build_training_frame. track_condition is frequently unknown this
+        # far ahead of an upcoming race (blank until race-day morning), same
+        # caveat as popularity/odds: that merge key just won't match and the
+        # feature comes back NaN.
+        horse_tc_latest = _latest_entity_stats(surface_history, ["horse_id", "track_condition"], f"horse_{prefix}_track_condition")
+        horse_place_latest = _latest_entity_stats(surface_history, ["horse_id", "place"], f"horse_{prefix}_place")
+        horse_distance_latest = _latest_entity_stats(surface_history, ["horse_id", "distance"], f"horse_{prefix}_distance")
+        horse_surface_style_latest = _latest_mean(surface_history, "horse_id", f"horse_{prefix}_early_position_ratio")
+        horse_surface_last3f_latest = _latest_mean(surface_history, "horse_id", f"horse_{prefix}_avg_last_3f")
+
+        df = df.merge(horse_surface_latest, on="horse_id", how="left")
+        df = df.merge(jockey_surface_latest, on="jockey_id", how="left")
+        df = df.merge(horse_tc_latest, on=["horse_id", "track_condition"], how="left")
+        df = df.merge(horse_place_latest, on=["horse_id", "place"], how="left")
+        df = df.merge(horse_distance_latest, on=["horse_id", "distance"], how="left")
+        df = df.merge(horse_surface_style_latest, on="horse_id", how="left")
+        df = df.merge(horse_surface_last3f_latest, on="horse_id", how="left")
+
+        rename_cols += [
+            f"horse_{prefix}_runs_before", f"horse_{prefix}_win_rate_before",
+            f"horse_{prefix}_top3_rate_before", f"horse_{prefix}_avg_rank_before",
+            f"jockey_{prefix}_runs_before", f"jockey_{prefix}_win_rate_before", f"jockey_{prefix}_top3_rate_before",
+            f"horse_{prefix}_track_condition_runs_before", f"horse_{prefix}_track_condition_win_rate_before",
+            f"horse_{prefix}_track_condition_top3_rate_before", f"horse_{prefix}_track_condition_avg_rank_before",
+            f"horse_{prefix}_place_runs_before", f"horse_{prefix}_place_win_rate_before",
+            f"horse_{prefix}_place_top3_rate_before", f"horse_{prefix}_place_avg_rank_before",
+            f"horse_{prefix}_distance_runs_before", f"horse_{prefix}_distance_win_rate_before",
+            f"horse_{prefix}_distance_top3_rate_before", f"horse_{prefix}_distance_avg_rank_before",
+        ]
+
+        # trainer_id isn't always available on every shutuba source, so this
+        # is skipped gracefully (the final NaN-fill loop below covers it).
+        if "trainer_id" in df.columns:
+            trainer_surface_latest = _latest_entity_stats(surface_history, "trainer_id", f"trainer_{prefix}")
+            df = df.merge(trainer_surface_latest, on="trainer_id", how="left")
+            rename_cols += [f"trainer_{prefix}_runs_before", f"trainer_{prefix}_win_rate_before", f"trainer_{prefix}_top3_rate_before"]
+
+    if "trainer_id" in df.columns:
+        trainer_latest = _latest_entity_stats(training_df, "trainer_id", "trainer")
+        df = df.merge(trainer_latest, on="trainer_id", how="left")
+        rename_cols += ["trainer_runs_before", "trainer_win_rate_before", "trainer_top3_rate_before"]
+
+    df = df.rename(columns={f"{col}_latest": col for col in rename_cols})
     df["days_since_last_race"] = np.nan  # unknown for a not-yet-run race
 
-    for col in ALL_FEATURE_COLUMNS:
+    for col in set(ALL_FEATURE_COLUMNS) | set(TURF_FEATURE_COLUMNS):
         if col not in df.columns:
             df[col] = np.nan
     return df
