@@ -16,7 +16,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from keiba_ai.features import ALL_FEATURE_COLUMNS, build_prediction_frame, build_training_frame
+from keiba_ai.features import ALL_FEATURE_COLUMNS, TURF_FEATURE_COLUMNS, build_prediction_frame, build_training_frame
 from keiba_ai.io import read_race_csv
 from keiba_ai.model import KeibaModel, bet_type_hint, longshot_value_alert, softmax_scores, train_model
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig, is_jra_race_id
@@ -50,11 +50,23 @@ st.caption(
 )
 
 REAL_MODEL_PATH = Path("models/model_dirt.joblib")
+REAL_MODEL_PATH_BY_SURFACE = {"ダート": REAL_MODEL_PATH, "芝": Path("models/model_turf.joblib")}
 REAL_HISTORY_PATH = Path("models/history.csv")
 REAL_DATA_PATH = Path("data/jra_results.csv")
 REAL_OIKIRI_PATH = Path("data/oikiri.csv")
 REAL_PEDIGREE_PATH = Path("data/pedigree.csv")
 MARKET_FEATURE_COLUMNS = {"popularity_numeric", "odds_numeric"}
+
+# 芝 caveat shown next to every surface selector -- see README's「芝モデルに
+# ついて」section: held-out metrics/ROI are on par with the dirt model, but
+# training_grade is currently uninformative (data/oikiri.csv has zero turf
+# coverage) and there's been no live day-by-day tracking yet, unlike dirt.
+TURF_CAVEAT = (
+    "⚠️ 芝モデルはダートモデルと同じ設計・検証手順(held-outバックテストでの"
+    "実払戻ROI確認)は通していますが、追切評価(`training_grade`)は"
+    "`data/oikiri.csv`が未収集のため機能せず、ライブ予想での日次検証実績も"
+    "まだありません。詳細はREADMEの「芝モデルについて」を参照してください。"
+)
 
 
 @st.cache_resource
@@ -66,16 +78,23 @@ def get_or_train_demo_model():
 
 
 @st.cache_resource
-def load_real_dirt_model():
+def load_real_model(surface: str = "ダート"):
     """Load the pre-trained model/history from disk if present (the normal
-    local-dev path, via `scripts/train_model.py`); otherwise train them
-    on the spot from the committed data/jra_results.csv (+ data/oikiri.csv
-    if present) -- e.g. on a fresh cloud deploy that only has the repo
-    checked out, not a locally-trained models/ directory. Training on the
-    full dataset takes well under a minute and only happens once per app
-    process thanks to @st.cache_resource."""
-    if REAL_MODEL_PATH.exists() and REAL_HISTORY_PATH.exists():
-        model = KeibaModel.load(REAL_MODEL_PATH)
+    local-dev path, via `scripts/train_model.py --dirt-only`/`--turf-only`);
+    otherwise train them on the spot from the committed data/jra_results.csv
+    (+ data/oikiri.csv if present) -- e.g. on a fresh cloud deploy that only
+    has the repo checked out, not a locally-trained models/ directory.
+    Training on the full dataset takes well under a minute and only happens
+    once per (app process, surface) thanks to @st.cache_resource.
+
+    `surface` is "ダート" or "芝" (see REAL_MODEL_PATH_BY_SURFACE); history.csv
+    is shared between both (build_training_frame computes both surfaces'
+    conditional features regardless), only the model file and the fit_df/
+    feature_columns used for an on-the-spot fallback train differ.
+    """
+    model_path = REAL_MODEL_PATH_BY_SURFACE[surface]
+    if model_path.exists() and REAL_HISTORY_PATH.exists():
+        model = KeibaModel.load(model_path)
         history_df = read_race_csv(REAL_HISTORY_PATH, parse_dates=["date"])
         return model, history_df
 
@@ -87,8 +106,9 @@ def load_real_dirt_model():
         pedigree = read_race_csv(REAL_PEDIGREE_PATH)[["horse_id", "sire_id", "damsire_id"]]
         raw = raw.merge(pedigree, on="horse_id", how="left")
     training_df = build_training_frame(raw)
-    fit_df = training_df[training_df["is_dirt"]]
-    feature_columns = [c for c in ALL_FEATURE_COLUMNS if c not in MARKET_FEATURE_COLUMNS]
+    fit_df = training_df[training_df["surface"] == surface]
+    all_columns = ALL_FEATURE_COLUMNS if surface == "ダート" else TURF_FEATURE_COLUMNS
+    feature_columns = [c for c in all_columns if c not in MARKET_FEATURE_COLUMNS]
     model = train_model(fit_df, feature_columns=feature_columns)
     return model, training_df
 
@@ -191,9 +211,14 @@ if mode == "デモデータで試す":
     st.caption("※ 合成生成した架空のレースです。実データではありません。")
 
 elif mode == "実データモデルを使う(学習済み)":
-    if not REAL_MODEL_PATH.exists() and not REAL_DATA_PATH.exists():
+    surface = st.radio("サーフェスを選択", ["ダート", "芝"], horizontal=True)
+    if surface == "芝":
+        st.caption(TURF_CAVEAT)
+    model_path = REAL_MODEL_PATH_BY_SURFACE[surface]
+
+    if not model_path.exists() and not REAL_DATA_PATH.exists():
         st.warning(
-            "学習済みモデルも学習データも見つかりません(`models/model_dirt.joblib` / "
+            f"学習済みモデルも学習データも見つかりません(`{model_path}` / "
             "`data/jra_results.csv`)。先にコマンドラインでデータを収集してください:\n\n"
             "```bash\n"
             "python scripts/scrape_jra_dirt_results.py \\\n"
@@ -202,21 +227,21 @@ elif mode == "実データモデルを使う(学習済み)":
         )
         st.stop()
 
-    if not REAL_MODEL_PATH.exists():
+    if not model_path.exists():
         st.info("学習済みモデルが見つからないため、その場でデータから学習します(数十秒かかります)。")
 
-    model, history_df = load_real_dirt_model()
-    dirt_history = history_df[history_df["surface"] == "ダート"]
+    model, history_df = load_real_model(surface)
+    surface_history = history_df[history_df["surface"] == surface]
     st.success(
         f"学習済み実データモデルを読み込みました "
         f"({format_metrics(model.metrics)}、"
-        f"学習データ: ダート{dirt_history['race_id'].nunique()}レース、"
+        f"学習データ: {surface}{surface_history['race_id'].nunique()}レース、"
         f"{history_df['date'].min():%Y-%m-%d}〜{history_df['date'].max():%Y-%m-%d})"
     )
 
-    places = sorted(dirt_history["place"].dropna().unique())
+    places = sorted(surface_history["place"].dropna().unique())
     selected_place = st.selectbox("競馬場を選択", ["すべて"] + places)
-    place_filtered = dirt_history if selected_place == "すべて" else dirt_history[dirt_history["place"] == selected_place]
+    place_filtered = surface_history if selected_place == "すべて" else surface_history[surface_history["place"] == selected_place]
 
     # Sort by the actual date, not the race_id string: race_id encodes
     # YYYYPPKKDDRR, so string-sorting mixes different courses' place codes
@@ -232,15 +257,15 @@ elif mode == "実データモデルを使う(学習済み)":
     race_ids = race_order["race_id"].tolist()[-50:]
 
     if not race_ids:
-        st.warning("選択した競馬場のダートレースが見つかりませんでした。")
+        st.warning(f"選択した競馬場の{surface}レースが見つかりませんでした。")
         st.stop()
 
     race_labels = race_label_lookup(place_filtered, race_ids)
     chosen_race = st.selectbox(
-        f"ダートレースを選択(直近{len(race_ids)}件)", race_ids,
+        f"{surface}レースを選択(直近{len(race_ids)}件)", race_ids,
         index=len(race_ids) - 1, format_func=lambda rid: race_labels[rid],
     )
-    race_rows = dirt_history[dirt_history["race_id"] == chosen_race]
+    race_rows = surface_history[surface_history["race_id"] == chosen_race]
     info = race_rows.iloc[0]
     st.caption(f"{info['date']:%Y-%m-%d} {info['place']} {info['surface']}{info['distance']:.0f}m {info['track_condition']}")
 
@@ -286,10 +311,11 @@ elif mode == "今日・明日のレースを予想":
         "**まだ結果の出ていない、これから走るレース**が対象です。"
         "開催の数日前〜当日にカードが発表されてから使えます(発表前の日付は空振りになります)。"
     )
-    if not REAL_MODEL_PATH.exists() and not REAL_DATA_PATH.exists():
+    if not REAL_DATA_PATH.exists() and not any(p.exists() for p in REAL_MODEL_PATH_BY_SURFACE.values()):
         st.warning(
             "学習済みモデルも学習データも見つかりません(`models/model_dirt.joblib` / "
-            "`data/jra_results.csv`)。先にコマンドラインでデータを収集してください:\n\n"
+            "`models/model_turf.joblib` / `data/jra_results.csv`)。先にコマンドラインで"
+            "データを収集してください:\n\n"
             "```bash\n"
             "python scripts/scrape_jra_dirt_results.py \\\n"
             "    --start-date 20240101 --end-date 20240630 --out data/jra_results.csv\n"
@@ -297,11 +323,24 @@ elif mode == "今日・明日のレースを予想":
         )
         st.stop()
 
-    if not REAL_MODEL_PATH.exists():
-        st.info("学習済みモデルが見つからないため、その場でデータから学習します(数十秒かかります)。")
+    surface_mode = st.radio("対象サーフェス", ["ダートのみ", "芝のみ", "両方(各サーフェス専用モデルを使用)"], horizontal=True)
+    target_surfaces = {
+        "ダートのみ": ["ダート"], "芝のみ": ["芝"],
+        "両方(各サーフェス専用モデルを使用)": ["ダート", "芝"],
+    }[surface_mode]
+    if "芝" in target_surfaces:
+        st.caption(TURF_CAVEAT)
 
-    model, history_df = load_real_dirt_model()
-    st.success(f"学習済み実データモデルを読み込みました ({format_metrics(model.metrics)})")
+    models_by_surface = {}
+    history_df = None
+    for s in target_surfaces:
+        model_path = REAL_MODEL_PATH_BY_SURFACE[s]
+        if not model_path.exists():
+            st.info(f"{s}の学習済みモデルが見つからないため、その場でデータから学習します(数十秒かかります)。")
+        s_model, s_history = load_real_model(s)
+        models_by_surface[s] = s_model
+        history_df = s_history  # identical mixed-surface history.csv regardless of surface
+        st.success(f"{s}の学習済み実データモデルを読み込みました ({format_metrics(s_model.metrics)})")
     pedigree_df = (
         read_race_csv(REAL_PEDIGREE_PATH)[["horse_id", "sire_id", "damsire_id"]]
         if REAL_PEDIGREE_PATH.exists() else None
@@ -321,7 +360,6 @@ elif mode == "今日・明日のレースを予想":
     with col3:
         target_date = st.date_input("予想したい開催日", key="predict_date")
 
-    dirt_only = st.checkbox("ダートレースのみ予想する(このモデルはダート特化です)", value=True)
     contact = st.text_input(
         "連絡先メールアドレス",
         help="スクレイパーのUser-Agentに埋め込まれ、アクセス元を示すために使われます(必須)。",
@@ -370,7 +408,8 @@ elif mode == "今日・明日のレースを予想":
             if parsed["entries"]:
                 meta = parsed["meta"]
                 surface = meta.get("surface", "")
-                if not (dirt_only and surface != "ダート"):
+                race_model = models_by_surface.get(surface)
+                if race_model is not None:
                     shutuba_df = pd.DataFrame(parsed["entries"])
                     shutuba_df["surface"] = surface
                     shutuba_df["distance"] = meta.get("distance")
@@ -386,7 +425,7 @@ elif mode == "今日・明日のレースを予想":
                     if pedigree_df is not None:
                         shutuba_df = shutuba_df.merge(pedigree_df, on="horse_id", how="left")
 
-                    feature_df = add_predictions(model, build_prediction_frame(shutuba_df, history_df))
+                    feature_df = add_predictions(race_model, build_prediction_frame(shutuba_df, history_df))
                     race_no = int(race_id[-2:])
                     label = f"{place} {race_no}R  {meta.get('race_name', '')} ({surface}{meta.get('distance', '?')}m)"
                     race_results.append((race_no, label, feature_df))
