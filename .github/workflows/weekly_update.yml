@@ -1,10 +1,14 @@
 name: Weekly dataset update and retrain
 
-# Keeps data/jra_results.csv current and republishes a freshly retrained
-# model. Runs scripts/update_dataset.py, which scrapes only the JRA races
-# published since the dataset's last recorded date (see the script's
-# docstring) -- so a normal weekly run is a small, quick delta, not a
-# full re-scrape.
+# Keeps data/jra_results.csv current and republishes freshly retrained dirt
+# and turf models. Runs scripts/update_dataset.py, which scrapes only the
+# JRA races published since the dataset's last recorded date (see the
+# script's docstring) -- so a normal weekly run is a small, quick delta, not
+# a full re-scrape. oikiri (training_grade) is fetched for both surfaces,
+# capped per run by update_dataset.py's --oikiri-max-races default so this
+# stays quick too; see README's「芝モデルについて」for how the historical
+# turf oikiri backlog was backfilled separately (a one-time run, not part of
+# this recurring job).
 #
 # Requires a repository variable SCRAPER_CONTACT_EMAIL (Settings > Secrets
 # and variables > Actions > Variables) with a real contact address, embedded
@@ -40,6 +44,7 @@ jobs:
           python scripts/update_dataset.py \
             --data data/jra_results.csv \
             --model-out models/model_dirt.joblib \
+            --turf-model-out models/model_turf.joblib \
             --history-out models/history.csv \
             --min-interval 1.5 \
             --contact "${{ vars.SCRAPER_CONTACT_EMAIL || 'set-your-email-here' }}"
@@ -48,17 +53,29 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/jra_results.csv data/oikiri.csv
+          # data/pedigree.csv is also updated by update_dataset.py (via
+          # scrape_pedigree.py) but was missing from this add list before --
+          # without it, every week's pedigree progress was silently discarded
+          # when the ephemeral runner was torn down.
+          git add data/jra_results.csv data/oikiri.csv data/pedigree.csv
           git diff --cached --quiet || git commit -m "chore: weekly JRA dataset update [skip ci]"
           git push
 
-      # models/model_dirt.joblib and models/history.csv are reproducible from
+      # models/*.joblib and models/history.csv are reproducible from
       # data/jra_results.csv (see .gitignore) so they aren't committed --
-      # published here as a downloadable run artifact instead.
+      # published here as downloadable run artifacts instead.
       - uses: actions/upload-artifact@v4
         with:
           name: model_dirt
           path: |
             models/model_dirt.joblib
+            models/history.csv
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model_turf
+          path: |
+            models/model_turf.joblib
             models/history.csv
           retention-days: 90

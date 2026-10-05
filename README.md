@@ -716,10 +716,14 @@ python scripts/predict_raceday.py --date 20250111 --dirt-only \
 - 使うには、リポジトリの Settings → Secrets and variables → Actions →
   Variables で **`SCRAPER_CONTACT_EMAIL`**(スクレイパーのUser-Agentに
   埋め込む連絡先)を設定してください。
-- 更新された `data/jra_results.csv` は自動的にコミット・pushされます。
-- `models/model_dirt.joblib` / `models/history.csv` はリポジトリにコミット
-  せず(`data/jra_results.csv` から数秒で再現できるため)、ワークフローの
-  実行結果(Artifacts)からダウンロードする形にしています。
+- 更新された `data/jra_results.csv` / `data/oikiri.csv` / `data/pedigree.csv`
+  は自動的にコミット・pushされます(芝・ダート両方の`training_grade`を
+  維持するため、oikiriは`--dirt-only`フラグに関わらず両サーフェス分を
+  1回あたり`--oikiri-max-races`件まで取得します)。
+- `models/model_dirt.joblib` / `models/model_turf.joblib` /
+  `models/history.csv` はリポジトリにコミットせず(`data/jra_results.csv`
+  から数秒で再現できるため)、ワークフローの実行結果(Artifacts、
+  `model_dirt`と`model_turf`の2つ)からダウンロードする形にしています。
 - 手動実行(`workflow_dispatch`)にも対応しているので、Actionsタブから
   いつでも即座にトリガーできます。
 

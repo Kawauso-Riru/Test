@@ -1,12 +1,16 @@
 #!/usr/bin/env python
-"""Incrementally update the JRA race-result dataset and retrain the model.
+"""Incrementally update the JRA race-result dataset and retrain the models.
 
 Finds the last date already present in --data, scrapes every day from the
 next day up to --end-date (default: yesterday) by delegating to
 scrape_jra_dirt_results.py, merges the new rows in (de-duplicated by
-race_id+umaban), and retrains the dirt-specialized model. This is the single
-command a scheduled job (e.g. a weekly GitHub Actions run -- see
-.github/workflows/weekly_update.yml) needs to keep the model current.
+race_id+umaban), and retrains both the dirt-specialized model
+(models/model_dirt.joblib) and the turf one (models/model_turf.joblib,
+pass --skip-turf to opt out). This is the single command a scheduled job
+(e.g. a weekly GitHub Actions run -- see .github/workflows/weekly_update.yml)
+needs to keep both models current. oikiri (training_grade) is fetched for
+races on both surfaces regardless of --dirt-only, capped per run by
+--oikiri-max-races so a normal run stays a quick delta.
 
 If --data doesn't exist yet, pass --start-date to bootstrap it from scratch
 (equivalent to running scrape_jra_dirt_results.py directly).
@@ -27,7 +31,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from keiba_ai.features import ALL_FEATURE_COLUMNS, build_training_frame  # noqa: E402
+from keiba_ai.features import ALL_FEATURE_COLUMNS, TURF_FEATURE_COLUMNS, build_training_frame  # noqa: E402
 from keiba_ai.io import read_race_csv  # noqa: E402
 from keiba_ai.model import train_model  # noqa: E402
 
@@ -48,12 +52,24 @@ def main() -> None:
     parser.add_argument("--contact", default="set-your-email-here")
     parser.add_argument("--dirt-only", action=argparse.BooleanOptionalAction, default=True,
                          help="fit only on dirt races (default: on; pass --no-dirt-only to disable)")
+    parser.add_argument("--skip-turf", action="store_true",
+                         help="don't also retrain the turf model (models/model_turf.joblib). "
+                              "On by default: a normal run keeps both models current, since "
+                              "oikiri is now fetched for all races regardless of --dirt-only "
+                              "(see the scrape_oikiri.py call below).")
     parser.add_argument("--include-market-features", action="store_true",
                          help="keep popularity/odds as features (see train_model.py's caveat)")
     parser.add_argument("--model-out", default="models/model_dirt.joblib")
+    parser.add_argument("--turf-model-out", default="models/model_turf.joblib")
     parser.add_argument("--history-out", default="models/history.csv")
     parser.add_argument("--oikiri", default="data/oikiri.csv",
                          help="training-grade CSV kept in sync with --data via scripts/scrape_oikiri.py")
+    parser.add_argument("--oikiri-max-races", type=int, default=500,
+                         help="safety cap on oikiri races fetched this run (keeps a normal weekly "
+                              "run a quick delta rather than accidentally re-attempting a large "
+                              "backlog all at once -- a one-time historical backfill, e.g. for "
+                              "turf races that predate this flag, should be run manually with a "
+                              "much higher --max-races directly via scrape_oikiri.py instead)")
     parser.add_argument("--pedigree", default="data/pedigree.csv",
                          help="sire/damsire CSV kept in sync with --data via scripts/scrape_pedigree.py")
     parser.add_argument("--skip-retrain", action="store_true", help="only update the dataset, don't retrain")
@@ -112,12 +128,18 @@ def main() -> None:
     # Resumable/incremental by design (see scrape_oikiri.py): pointed at the
     # just-updated dataset, this only fetches whichever race_ids aren't
     # already in --oikiri yet, so a normal weekly run is a handful of new
-    # races, not a full re-scrape.
+    # races, not a full re-scrape. Always --no-dirt-only here (regardless of
+    # --dirt-only, which only controls which *model(s)* get fit below) so a
+    # normal weekly run also keeps pace with new turf races, not just dirt --
+    # otherwise training_grade would stay permanently uninformative for the
+    # turf model the way it was before data/oikiri.csv's one-time turf
+    # backfill (see README's「芝モデルについて」known-constraints note).
     oikiri_path = Path(args.oikiri)
     subprocess.run([
         sys.executable, str(SCRAPE_OIKIRI_SCRIPT),
-        "--data", str(data_path), "--dirt-only" if args.dirt_only else "--no-dirt-only",
+        "--data", str(data_path), "--no-dirt-only",
         "--out", str(oikiri_path), "--min-interval", str(args.min_interval),
+        "--max-races", str(args.oikiri_max_races),
         "--cache-dir", args.cache_dir, "--contact", args.contact,
     ])
     if oikiri_path.exists():
@@ -141,21 +163,31 @@ def main() -> None:
         print(f"merged sire_id: {combined['sire_id'].notna().sum()}/{len(combined)} rows have a sire")
 
     training_df = build_training_frame(combined)
-    fit_df = training_df[training_df["is_dirt"]] if args.dirt_only else training_df
-    print(f"retraining on {len(fit_df)} entries ({fit_df['race_id'].nunique()} races)")
 
-    feature_columns = ALL_FEATURE_COLUMNS
+    dirt_fit_df = training_df[training_df["is_dirt"]] if args.dirt_only else training_df
+    print(f"retraining dirt model on {len(dirt_fit_df)} entries ({dirt_fit_df['race_id'].nunique()} races)")
+    dirt_feature_columns = ALL_FEATURE_COLUMNS
     if not args.include_market_features:
-        feature_columns = [c for c in ALL_FEATURE_COLUMNS if c not in MARKET_FEATURE_COLUMNS]
+        dirt_feature_columns = [c for c in ALL_FEATURE_COLUMNS if c not in MARKET_FEATURE_COLUMNS]
+    dirt_model = train_model(dirt_fit_df, feature_columns=dirt_feature_columns)
+    print("dirt metrics:", dirt_model.metrics)
+    dirt_model.save(Path(args.model_out))
+    print(f"saved model   -> {args.model_out}")
 
-    model = train_model(fit_df, feature_columns=feature_columns)
-    print("metrics:", model.metrics)
-
-    model.save(Path(args.model_out))
     Path(args.history_out).parent.mkdir(parents=True, exist_ok=True)
     training_df.to_csv(args.history_out, index=False)
-    print(f"saved model   -> {args.model_out}")
     print(f"saved history -> {args.history_out}")
+
+    if not args.skip_turf:
+        turf_fit_df = training_df[~training_df["is_dirt"]]
+        print(f"retraining turf model on {len(turf_fit_df)} entries ({turf_fit_df['race_id'].nunique()} races)")
+        turf_feature_columns = TURF_FEATURE_COLUMNS
+        if not args.include_market_features:
+            turf_feature_columns = [c for c in TURF_FEATURE_COLUMNS if c not in MARKET_FEATURE_COLUMNS]
+        turf_model = train_model(turf_fit_df, feature_columns=turf_feature_columns)
+        print("turf metrics:", turf_model.metrics)
+        turf_model.save(Path(args.turf_model_out))
+        print(f"saved model   -> {args.turf_model_out}")
 
 
 if __name__ == "__main__":
