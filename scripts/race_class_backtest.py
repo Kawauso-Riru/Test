@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import requests
 from sklearn.model_selection import GroupShuffleSplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -92,6 +93,9 @@ def main() -> None:
         try:
             result = scraper.fetch_race_result(f"https://race.netkeiba.com/race/result.html?race_id={race_id}")
         except RobotsDisallowedError:
+            skipped += 1
+            continue
+        except requests.RequestException:
             skipped += 1
             continue
         payout = result.get("payout") or {}
