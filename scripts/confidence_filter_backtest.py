@@ -40,6 +40,9 @@ def main() -> None:
     parser.add_argument("--data", default="data/jra_results.csv")
     parser.add_argument("--oikiri", default="data/oikiri.csv")
     parser.add_argument("--model", default="models/model_dirt.joblib")
+    parser.add_argument("--turf-only", action="store_true",
+                         help="evaluate the turf-only split instead of dirt -- pair with "
+                              "--model models/model_turf.joblib")
     parser.add_argument("--unit", type=int, default=100, help="yen bet per race")
     parser.add_argument("--n-buckets", type=int, default=4, help="confidence quantile buckets (4 = quartiles)")
     parser.add_argument("--min-interval", type=float, default=1.5)
@@ -55,7 +58,8 @@ def main() -> None:
         oikiri = read_race_csv(oikiri_path)[["race_id", "horse_id", "training_grade"]]
         raw = raw.merge(oikiri, on=["race_id", "horse_id"], how="left")
     training_df = build_training_frame(raw)
-    fit_df = training_df[training_df["is_dirt"]].dropna(subset=["relevance"]).reset_index(drop=True)
+    surface_mask = ~training_df["is_dirt"] if args.turf_only else training_df["is_dirt"]
+    fit_df = training_df[surface_mask].dropna(subset=["relevance"]).reset_index(drop=True)
 
     splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
     _, valid_idx = next(splitter.split(fit_df, fit_df["relevance"], groups=fit_df["race_id"]))
