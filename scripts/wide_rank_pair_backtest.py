@@ -53,7 +53,8 @@ def pair_return(umaban_a: str, umaban_b: str, payout: dict, unit: int) -> int:
     return 0
 
 
-def evaluate_split(fit_df: pd.DataFrame, feature_columns: list, seed: int, scraper: PoliteScraper, unit: int) -> pd.DataFrame:
+def evaluate_split(fit_df: pd.DataFrame, feature_columns: list, seed: int, scraper: PoliteScraper, unit: int,
+                    max_races: int | None = None) -> pd.DataFrame:
     splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
     _, valid_idx = next(splitter.split(fit_df, fit_df["relevance"], groups=fit_df["race_id"]))
     valid_df = fit_df.iloc[valid_idx].copy()
@@ -61,8 +62,13 @@ def evaluate_split(fit_df: pd.DataFrame, feature_columns: list, seed: int, scrap
     model = train_model(fit_df, feature_columns=feature_columns, seed=seed)
     valid_df["score"] = model.predict(valid_df)
 
+    race_ids = valid_df.sort_values("date")["race_id"].drop_duplicates().tolist()
+    if max_races:
+        race_ids = race_ids[:max_races]
+
     rows = []
-    for race_id, race_rows in valid_df.groupby("race_id"):
+    for race_id in race_ids:
+        race_rows = valid_df[valid_df["race_id"] == race_id]
         ranked = race_rows.sort_values("score", ascending=False)
         if len(ranked) < N_RANKS:
             continue
@@ -91,6 +97,7 @@ def main() -> None:
                          help="evaluate the turf-only split instead of dirt")
     parser.add_argument("--unit", type=int, default=100)
     parser.add_argument("--seeds", default="1,2,3,4,5,99")
+    parser.add_argument("--max-races", type=int, help="cap races fetched per seed")
     parser.add_argument("--min-interval", type=float, default=1.5)
     parser.add_argument("--cache-dir", default="data/cache/netkeiba")
     parser.add_argument("--contact", default="set-your-email-here")
@@ -119,7 +126,7 @@ def main() -> None:
     seeds = [int(s) for s in args.seeds.split(",")]
     all_dfs = []
     for seed in seeds:
-        df = evaluate_split(fit_df, feature_columns, seed, scraper, args.unit)
+        df = evaluate_split(fit_df, feature_columns, seed, scraper, args.unit, args.max_races)
         all_dfs.append(df)
         print(f"seed {seed}: {len(df)} races processed")
 
