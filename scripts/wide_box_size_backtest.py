@@ -19,7 +19,7 @@ from sklearn.model_selection import GroupShuffleSplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from keiba_ai.features import ALL_FEATURE_COLUMNS, build_training_frame  # noqa: E402
+from keiba_ai.features import ALL_FEATURE_COLUMNS, TURF_FEATURE_COLUMNS, build_training_frame  # noqa: E402
 from keiba_ai.io import read_race_csv  # noqa: E402
 from keiba_ai.model import train_model  # noqa: E402
 from keiba_ai.scraper import PoliteScraper, RobotsDisallowedError, ScraperConfig  # noqa: E402
@@ -91,6 +91,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", default="data/jra_results.csv")
     parser.add_argument("--oikiri", default="data/oikiri.csv")
+    parser.add_argument("--turf-only", action="store_true",
+                         help="evaluate the turf-only split instead of dirt")
     parser.add_argument("--unit", type=int, default=100)
     parser.add_argument("--seeds", default="1,2,3,4,5,99")
     parser.add_argument("--min-interval", type=float, default=1.5)
@@ -105,8 +107,10 @@ def main() -> None:
         oikiri = read_race_csv(oikiri_path)[["race_id", "horse_id", "training_grade"]]
         raw = raw.merge(oikiri, on=["race_id", "horse_id"], how="left")
     training_df = build_training_frame(raw)
-    fit_df = training_df[training_df["is_dirt"]].dropna(subset=["relevance"]).reset_index(drop=True)
-    feature_columns = [c for c in ALL_FEATURE_COLUMNS if c not in MARKET_FEATURE_COLUMNS]
+    surface_mask = ~training_df["is_dirt"] if args.turf_only else training_df["is_dirt"]
+    fit_df = training_df[surface_mask].dropna(subset=["relevance"]).reset_index(drop=True)
+    all_columns = TURF_FEATURE_COLUMNS if args.turf_only else ALL_FEATURE_COLUMNS
+    feature_columns = [c for c in all_columns if c not in MARKET_FEATURE_COLUMNS]
 
     scraper = PoliteScraper(
         ScraperConfig(
