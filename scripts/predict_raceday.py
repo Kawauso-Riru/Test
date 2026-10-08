@@ -23,6 +23,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from keiba_ai.bet_rules import allocate_daily_budget, recommend_bet  # noqa: E402
 from keiba_ai.features import build_prediction_frame  # noqa: E402
 from keiba_ai.io import read_race_csv  # noqa: E402
 from keiba_ai.model import KeibaModel, bet_type_hint, longshot_value_alert, softmax_scores  # noqa: E402
@@ -66,6 +67,11 @@ def main() -> None:
     parser.add_argument("--contact", default="set-your-email-here")
     parser.add_argument("--top-n", type=int, default=5, help="how many horses to show per race")
     parser.add_argument("--out", help="optional path to also save the full report as CSV")
+    parser.add_argument("--daily-budget", type=int, default=10000,
+                         help="total yen to allocate across the day's races via keiba_ai.bet_rules "
+                              "(see README's betting-strategy research for what each rule is based on "
+                              "and how little of it actually clears the JRA takeout)")
+    parser.add_argument("--bet-out", help="optional path to save the funded bet plan as CSV")
     args = parser.parse_args()
     if args.dirt_only and args.turf_only:
         parser.error("--dirt-only and --turf-only are mutually exclusive")
@@ -92,6 +98,7 @@ def main() -> None:
     print(f"{args.date}: {len(jra_races)} JRA races found")
 
     all_rows = []
+    recommendations = []
     for race in jra_races:
         race_id, place = race["race_id"], race["place"]
         parsed = fetch_with_retry(scraper.fetch_shutuba, scraper.shutuba_url(race_id))
@@ -142,6 +149,10 @@ def main() -> None:
         if alert:
             print(alert)
 
+        rec = recommend_bet(result, race_id, race_label, surface)
+        if rec is not None:
+            recommendations.append(rec)
+
         all_rows.append(result[[
             "race_id", "race_name", "umaban", "horse_name", "jockey",
             "top3_probability(%)", "relative_share(%)", "score",
@@ -155,6 +166,36 @@ def main() -> None:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         combined.to_csv(args.out, index=False)
         print(f"\nwrote full report -> {args.out}")
+
+    print(f"\n{'=' * 90}\n本日の買い目プラン(予算{args.daily_budget:,}円) -- 詳細はREADMEの「馬券戦略の検証」参照\n{'=' * 90}")
+    funded, skipped = allocate_daily_budget(recommendations, daily_budget=args.daily_budget)
+    if not funded:
+        print("予算内に収まる買い目なし")
+    total_stake = 0
+    bet_rows = []
+    for rec, stake in funded:
+        total_stake += stake
+        print(f"[{rec.tier}] {rec.race_label}\n"
+              f"  買い目: {rec.bet_type} {rec.target}  stake={stake:,}円\n"
+              f"  根拠: {rec.rationale}")
+        bet_rows.append({
+            "race_id": rec.race_id, "race_label": rec.race_label, "tier": rec.tier,
+            "bet_type": rec.bet_type, "target": rec.target, "stake": stake,
+            "expected_roi_pct": rec.expected_roi_pct, "rationale": rec.rationale,
+        })
+    print(f"\n合計賭け金: {total_stake:,}円 / 予算{args.daily_budget:,}円")
+    if skipped:
+        print(f"予算オーバーのため見送り: {len(skipped)}レース "
+              f"({', '.join(r.race_label for r in skipped[:5])}{' ...' if len(skipped) > 5 else ''})")
+    print("注意: 複勝やワイドを含め、ここでのROIは過去の held-out バックテストの数字であり、"
+          "黒字化(100%超)が確認できているのは芝の「短距離×多頭数→ワイド3位-6位」(tier S)のみです。"
+          "tier A/Bの買い目は相対的に「ましな」選択であって、長期的に勝てる保証はありません。")
+
+    if args.bet_out and bet_rows:
+        bet_df = pd.DataFrame(bet_rows)
+        Path(args.bet_out).parent.mkdir(parents=True, exist_ok=True)
+        bet_df.to_csv(args.bet_out, index=False)
+        print(f"\nwrote bet plan -> {args.bet_out}")
 
 
 if __name__ == "__main__":
